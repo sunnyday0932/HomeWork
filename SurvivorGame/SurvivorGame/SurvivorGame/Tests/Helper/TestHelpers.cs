@@ -1,6 +1,6 @@
 ﻿using SurvivorGame.Configs;
 
-namespace SurvivorGame.Tests;
+namespace SurvivorGame.Tests.Helper;
 
 public class TestHelpers
 {

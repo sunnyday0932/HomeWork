@@ -1,4 +1,5 @@
 ﻿using SurvivorGame.Configs;
+using SurvivorGame.Tests.Helper;
 
 namespace SurvivorGame.Tests;
 
