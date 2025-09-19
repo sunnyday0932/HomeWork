@@ -4660,3 +4660,378 @@ var highSight = baseConfigLowSight.CloneWith(cfg => cfg.SurvivorSight = 3);
 ```
 
 比手動複製所有欄位乾淨很多。
+
+
+Question : 
+這個測試通過了，接著我需要回到我前面問過的問題，我想知道我們目前的參數在 生存者 3 鬼 2 地圖大小 100 x 100 的情況下哪一邊的勝率高，並且我希望能夠將我們跑的模擬結果留下來，請幫我放在這個專案目錄下 TestResult 的檔案，檔案格式可以由你決定，但我會想知道 1、每一次模擬結果的關鍵事件，例如: 第幾回合生存者編號幾被鬼抓了，第幾回合生存者編號幾逃脫了。 2、每一次模擬結果的最終勝利方 3、最後統計出來的數字哪一邊勝率比較高?
+
+Answer : 
+棒！我幫你做了一組「可直接落地」的**批次模擬＋落檔**工具，不動你現有測試；只要把下面 3 個檔案加到主專案（`TagPOC`）裡，然後在 `Program.Main` 呼叫一次就能在專案根目錄下生成 `TestResult/`，包含：
+
+* `episode_XXXX.ndjson`：逐回合關鍵事件（CAPTURE / ESCAPE）
+* `summary.csv`：每場摘要（勝利方、回合數、雙方分數）
+* `aggregate.json`：整體統計（鬼勝率、生存者平均得分…），並指出哪一邊勝率較高
+
+我已預設參數：**地圖 100×100、3 名生存者、2 名鬼、100 回合**。
+你可以在 `Program.Main` 用這個設定跑 N 場（例如 300 場）。
+
+---
+
+# 1) `GameEvent.cs`
+
+```csharp
+using System;
+
+namespace TagPOC
+{
+    public enum GameEventType { Capture, Escape }
+
+    public sealed class GameEvent
+    {
+        public int Episode { get; set; }
+        public int Round { get; set; }
+        public GameEventType Type { get; set; }
+
+        // 參與者
+        public int? SurvivorId { get; set; }
+        public int? KillerId { get; set; }
+
+        // 事件位置（當下格）
+        public int X { get; set; }
+        public int Y { get; set; }
+
+        public override string ToString()
+        {
+            return $"{{\"episode\":{Episode},\"round\":{Round},\"type\":\"{Type}\",\"survivorId\":{(SurvivorId.HasValue ? SurvivorId.Value : -1)},\"killerId\":{(KillerId.HasValue ? KillerId.Value : -1)},\"x\":{X},\"y\":{Y}}}";
+        }
+    }
+}
+```
+
+---
+
+# 2) 擴充 logger：在 `StructuredLogger` 裡加事件收集
+
+把下列兩個新增的成員與修改過的兩個方法貼進你現有的 `StructuredLogger` 類別（原有功能不變；只是多記一份事件）。
+
+```csharp
+// 在 StructuredLogger 類別內新增：
+public readonly System.Collections.Generic.List<GameEvent> Events = new System.Collections.Generic.List<GameEvent>();
+internal int CurrentEpisode { get; set; } = 0;
+
+// 修改 Capture 與 Escape：保留原本 Console.WriteLine，同時記事件
+public void Capture(Killer killer, Survivor victim, string phase)
+{
+    Console.WriteLine($"[CAPTURE] phase={phase} killer={killer.Id}@{killer.Pos} victim={victim.Id}@{victim.Pos}");
+    Events.Add(new GameEvent
+    {
+        Episode = CurrentEpisode,
+        Round = killer is null ? 0 : killer.Id >= 0 ? 0 : 0, // 佔位，不用這行也行
+        // 正確 round 由外層填（見 RunOneWithEvents），這裡先佔位
+        Type = GameEventType.Capture,
+        SurvivorId = victim.Id,
+        KillerId = killer.Id,
+        X = killer.Pos.X,
+        Y = killer.Pos.Y
+    });
+}
+
+public void Escape(Survivor survivor)
+{
+    Console.WriteLine($"[ESCAPE] survivor={survivor.Id}@{survivor.Pos}");
+    Events.Add(new GameEvent
+    {
+        Episode = CurrentEpisode,
+        Round = 0, // 佔位，稍後由外層補 round
+        Type = GameEventType.Escape,
+        SurvivorId = survivor.Id,
+        KillerId = null,
+        X = survivor.Pos.X,
+        Y = survivor.Pos.Y
+    });
+}
+```
+
+> 小提醒：上面 `Round=0` 是暫存；我在下一個 `RunOneWithEvents` 會於事件發生的當回合即補上正確 `Round` 值。
+
+---
+
+# 3) `SimulatorExtensions.cs`：回傳事件、寫檔工具
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+
+namespace TagPOC
+{
+    public static class SimulatorExtensions
+    {
+        /// <summary>
+        /// 跑單場並回傳：勝者 / 分數 / 回合數 / 逐回合事件。
+        /// 此函式為保留你原有 RunOne 的語意，僅在事件產生時把 Round/EP 填正。
+        /// </summary>
+        public static (string Winner, int SurvivorScore, int KillerScore, int Rounds, List<GameEvent> Events)
+            RunOneWithEvents(GameConfig config, int episode)
+        {
+            var state = new GameState(config);
+            state.Log.CurrentEpisode = episode;
+
+            Setup.Initialize(state);
+            var exitsField = DistanceFieldBuilder.BuildExitField(state);
+
+            // 本地方法：把剛新增進 Events 的 round 填正
+            void StampRoundOnNewEvents(int round)
+            {
+                // 從尾端往回補到第一個尚未 stamp 的事件
+                for (int i = state.Log.Events.Count - 1; i >= 0; i--)
+                {
+                    if (state.Log.Events[i].Round == 0)
+                    {
+                        state.Log.Events[i].Round = round;
+                        state.Log.Events[i].Episode = episode;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+
+            for (state.Round = 1; state.Round <= config.MaxRounds; state.Round++)
+            {
+                // === Killer Phase ===
+                var killerMoves = new List<(Killer actor, Point target, double score)>();
+                foreach (var killer in state.Killers.Where(k => k.Alive))
+                {
+                    var target = KillerPolicy.DecideNext(state, killer, exitsField);
+                    var sc = -Point.Chebyshev(target, killer.Pos);
+                    killerMoves.Add((killer, target, sc));
+                }
+                var killerDecided = MoveConflictResolver.ResolveNoOverlapSwap(state, killerMoves);
+
+                // 套用 & 捕獲 #1
+                foreach (var kv in killerDecided)
+                {
+                    var killer = state.Killers.First(a => a.Id == kv.Key);
+                    killer.Pos = kv.Value;
+                }
+                foreach (var killer in state.Killers.Where(k => k.Alive))
+                {
+                    var victims = state.Survivors.Where(sv => sv.Alive && sv.Pos.Equals(killer.Pos)).ToList();
+                    foreach (var victim in victims)
+                    {
+                        victim.Alive = false;
+                        state.KillerScore++;
+                        state.Log.Capture(killer, victim, phase: "KillerPhase");
+                        StampRoundOnNewEvents(state.Round);
+                    }
+                }
+
+                if (!state.Survivors.Any(sv => sv.Alive))
+                {
+                    state.Log.RoundFooter(state);
+                    return ("Killer", state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
+                }
+
+                // === Survivor Phase ===
+                var survivorMoves = new List<(Survivor actor, Point target, double score)>();
+                foreach (var survivor in state.Survivors.Where(sv => sv.Alive))
+                {
+                    var target = SurvivorPolicy.DecideNext(state, survivor, exitsField);
+                    var sc = -Point.Chebyshev(target, survivor.Pos);
+                    survivorMoves.Add((survivor, target, sc));
+                }
+                var survivorDecided = MoveConflictResolver.ResolveNoOverlapSwap(state, survivorMoves);
+
+                // 移動
+                foreach (var kv in survivorDecided)
+                {
+                    var survivor = state.Survivors.First(a => a.Id == kv.Key);
+                    survivor.Pos = kv.Value;
+                }
+
+                // 逃脫
+                foreach (var survivor in state.Survivors.Where(sv => sv.Alive && state.IsExit(sv.Pos)).ToList())
+                {
+                    survivor.Alive = false;
+                    state.SurvivorScore++;
+                    state.Log.Escape(survivor);
+                    StampRoundOnNewEvents(state.Round);
+                }
+
+                // 被捕 #2（生踩鬼）
+                foreach (var survivor in state.Survivors.Where(sv => sv.Alive).ToList())
+                {
+                    if (state.Killers.Any(k => k.Alive && k.Pos.Equals(survivor.Pos)))
+                    {
+                        survivor.Alive = false;
+                        state.KillerScore++;
+                        var killer = state.Killers.First(k => k.Alive && k.Pos.Equals(survivor.Pos));
+                        state.Log.Capture(killer, survivor, phase: "SurvivorPhase");
+                        StampRoundOnNewEvents(state.Round);
+                    }
+                }
+
+                state.Log.RoundFooter(state);
+
+                if (!state.Survivors.Any(sv => sv.Alive))
+                {
+                    return ("Killer", state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
+                }
+            }
+
+            // 時間到：規則=鬼勝
+            return ("Killer", state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
+        }
+
+        /// <summary>
+        /// 跑多場並把結果寫入 ./TestResult
+        /// </summary>
+        public static void RunAndSaveBatch(GameConfig baseConfig, int episodes, string outputDir = "TestResult")
+        {
+            if (!Directory.Exists(outputDir))
+            {
+                Directory.CreateDirectory(outputDir);
+            }
+
+            var csvPath = Path.Combine(outputDir, "summary.csv");
+            using var sw = new StreamWriter(csvPath, false);
+            sw.WriteLine("episode,winner,survivorScore,killerScore,rounds");
+
+            int killerWins = 0;
+            int sumS = 0;
+            int sumK = 0;
+            int sumRounds = 0;
+
+            for (int i = 0; i < episodes; i++)
+            {
+                var config = new GameConfig
+                {
+                    Width = baseConfig.Width,
+                    Height = baseConfig.Height,
+                    MaxRounds = baseConfig.MaxRounds,
+                    SurvivorCount = baseConfig.SurvivorCount,
+                    KillerCount = baseConfig.KillerCount,
+                    SurvivorSight = baseConfig.SurvivorSight,
+                    KillerSight = baseConfig.KillerSight,
+                    ExitCount = baseConfig.ExitCount,
+                    Seed = baseConfig.Seed + i,
+                    VerboseLog = false,
+                    PrintAsciiMapEachRound = false
+                };
+
+                var (winner, sScore, kScore, rounds, events) = RunOneWithEvents(config, i);
+
+                // 逐回合事件 NDJSON
+                var ndjson = Path.Combine(outputDir, $"episode_{i:D4}.ndjson");
+                using (var ew = new StreamWriter(ndjson, false))
+                {
+                    for (int j = 0; j < events.Count; j++)
+                    {
+                        ew.WriteLine(events[j].ToString());
+                    }
+                }
+
+                // 摘要 CSV
+                sw.WriteLine($"{i},{winner},{sScore},{kScore},{rounds}");
+
+                if (winner == "Killer")
+                {
+                    killerWins++;
+                }
+                sumS += sScore;
+                sumK += kScore;
+                sumRounds += rounds;
+            }
+
+            double killerWinRate = (double)killerWins / episodes;
+            double avgS = (double)sumS / episodes;
+            double avgK = (double)sumK / episodes;
+            double avgR = (double)sumRounds / episodes;
+
+            // aggregate.json
+            var aggregatePath = Path.Combine(outputDir, "aggregate.json");
+            using (var aw = new StreamWriter(aggregatePath, false))
+            {
+                var whichHigher = killerWinRate > 0.5 ? "Killer" : (killerWinRate < 0.5 ? "Survivor" : "Tie");
+                aw.WriteLine("{");
+                aw.WriteLine($"  \"episodes\": {episodes},");
+                aw.WriteLine($"  \"killer_win_rate\": {killerWinRate.ToString("0.000", CultureInfo.InvariantCulture)},");
+                aw.WriteLine($"  \"avg_survivor_points\": {avgS.ToString("0.000", CultureInfo.InvariantCulture)},");
+                aw.WriteLine($"  \"avg_killer_points\": {avgK.ToString("0.000", CultureInfo.InvariantCulture)},");
+                aw.WriteLine($"  \"avg_rounds\": {avgR.ToString("0.0", CultureInfo.InvariantCulture)},");
+                aw.WriteLine($"  \"which_side_higher\": \"{whichHigher}\"");
+                aw.WriteLine("}");
+            }
+        }
+    }
+}
+```
+
+---
+
+# 4) 在 `Program.Main` 呼叫（100×100、S=3、K=2）
+
+把 `Main()` 換成或加上這段（或另外寫一個 `if` 開關）：
+
+```csharp
+public static void Main()
+{
+    var config = new GameConfig
+    {
+        Width = 100,
+        Height = 100,
+        MaxRounds = 100,
+        SurvivorCount = 3,
+        KillerCount = 2,
+        SurvivorSight = 2, // 5x5
+        KillerSight = 3,   // 7x7
+        ExitCount = 2,
+        Seed = 42,
+        VerboseLog = false,
+        PrintAsciiMapEachRound = false
+    };
+
+    // 跑 300 場（可依你需求調整），輸出到 ./TestResult
+    SimulatorExtensions.RunAndSaveBatch(config, episodes: 300, outputDir: "TestResult");
+
+    Console.WriteLine("Batch done. See ./TestResult for NDJSON per episode, summary.csv, and aggregate.json");
+}
+```
+
+---
+
+## 你會得到什麼？
+
+* `TestResult/episode_0000.ndjson`、`episode_0001.ndjson`、…
+  每行像這樣（方便 grep / jq）：
+
+  ```
+  {"episode":12,"round":7,"type":"Capture","survivorId":1,"killerId":0,"x":36,"y":42}
+  {"episode":12,"round":15,"type":"Escape","survivorId":0,"killerId":-1,"x":98,"y":3}
+  ```
+* `TestResult/summary.csv`
+
+  ```
+  episode,winner,survivorScore,killerScore,rounds
+  0,Killer,0,3,57
+  1,Killer,1,2,64
+  ...
+  ```
+* `TestResult/aggregate.json`
+  會包含鬼勝率、生存者/鬼平均得分與回合數，還有 `which_side_higher`（哪邊勝率較高）。
+
+---
+
+## 關於你問的三點
+
+1. **每次模擬的關鍵事件**：已寫入 `episode_*.ndjson`（包含「第幾回合、誰被抓、誰逃脫、位置」）。
+2. **每次模擬的最終勝利方**：在 `summary.csv`。
+3. **整體哪邊勝率較高**：在 `aggregate.json` 的 `which_side_higher` 字段 & `killer_win_rate`；同時你也可以從 `summary.csv` 自己計算。
+
+---
+
+如果你想把匯出改成單一大檔（例如單一 `events.ndjson`，或 SQLite），我也可以幫你換。或是要加上**隨機地圖/初始布局的 snapshot**，方便重現特定 Episode，也能一起加上。

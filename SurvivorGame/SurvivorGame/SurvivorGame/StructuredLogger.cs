@@ -1,10 +1,14 @@
 ﻿using SurvivorGame.Actors;
 using SurvivorGame.Configs;
+using SurvivorGame.Enums;
 
 namespace SurvivorGame;
 
 public class StructuredLogger(GameConfig cfg)
 {
+    public readonly System.Collections.Generic.List<GameEvent> Events = new System.Collections.Generic.List<GameEvent>();
+    internal int CurrentEpisode { get; set; } = 0;
+    
     public void RoundHeader(int round)
     {
         if (cfg.VerboseLog) Console.WriteLine($"\n=== Round {round} ===");
@@ -18,14 +22,35 @@ public class StructuredLogger(GameConfig cfg)
         }
     }
 
-    public void Capture(Killer k, Survivor v, string phase)
+    public void Capture(Killer killer, Survivor victim, string phase)
     {
-        Console.WriteLine($"[CAPTURE] phase={phase} killer={k.Id}@{k.Pos} victim={v.Id}@{v.Pos}");
+        Console.WriteLine($"[CAPTURE] phase={phase} killer={killer.Id}@{killer.Pos} victim={victim.Id}@{victim.Pos}");
+        Events.Add(new GameEvent
+        {
+            Episode = CurrentEpisode,
+            Round = 0, // 佔位，不用這行也行
+            // 正確 round 由外層填（見 RunOneWithEvents），這裡先佔位
+            Type = GameEventType.Capture,
+            SurvivorId = victim.Id,
+            KillerId = killer.Id,
+            X = killer.Pos.X,
+            Y = killer.Pos.Y
+        });
     }
 
-    public void Escape(Survivor sv)
+    public void Escape(Survivor survivor)
     {
-        Console.WriteLine($"[ESCAPE] survivor={sv.Id}@{sv.Pos}");
+        Console.WriteLine($"[ESCAPE] survivor={survivor.Id}@{survivor.Pos}");
+        Events.Add(new GameEvent
+        {
+            Episode = CurrentEpisode,
+            Round = 0, // 佔位，稍後由外層補 round
+            Type = GameEventType.Escape,
+            SurvivorId = survivor.Id,
+            KillerId = null,
+            X = survivor.Pos.X,
+            Y = survivor.Pos.Y
+        });
     }
 
     public static void PrintAscii(GameState s)
