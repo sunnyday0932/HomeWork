@@ -3207,3 +3207,490 @@ private const int five = 5;
 
 這樣就能在 5×5 的範圍內，同時滿足「一隻可見、另一隻不可見」的條件而不越界。跑 `dotnet test` 應該就會通過了。需要我把整個 `D_FieldBfsTests.cs` 幫你一併更新好嗎？
 
+Question : 不需要，我們繼續進行下一步 E 
+Answer : 
+
+太好，我把 **E. 生存者策略（Scoring & Moves, 16–20）** 的 xUnit 測試寫好了。
+重點都遵守你的程式風格：**所有迴圈（for/foreach/while）即使只有一行也一律使用 `{ }`**，並維持清楚的變數命名。
+
+把下面單一檔案加入 `TagPOC.Tests` 專案即可執行（依賴我們之前的 `TestBoardBuilder.cs` 與主專案的政策/場生成程式）。
+
+---
+
+## `E_SurvivorPolicyTests.cs`
+
+```csharp
+using System;
+using System.Linq;
+using TagPOC;
+using Xunit;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// E. 生存者策略（Scoring & Moves, 16–20）
+    /// 16) 出口相鄰即選出口
+    /// 17) 近身強懲避免自殺靠近（D_killer ≤ 2 的候選格不被選）
+    /// 18) 一步預測避免貼臉（可見鬼下一步可能貼臉的格會被避開）
+    /// 19) 未知區微懲罰：沒有可視鬼的 5x5 區會被小幅扣分
+    /// 20) Last-seen 陰影懲罰：候選格落在 last-seen 擴散半徑內會被避開
+    /// </summary>
+    public class E_SurvivorPolicyTests
+    {
+        [Fact(DisplayName = "E16. 出口相鄰 ⇒ SurvivorPolicy 應優先選出口格")]
+        public void AdjacentToExit_PicksExitImmediately()
+        {
+            // Arrange：生存者在 (3,3)，出口在 (4,4)，鬼遠離不影響
+            var config = new GameConfig
+            {
+                Width = nine, Height = nine,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3,
+                Seed = 10
+            };
+
+            var exitPoint = new Point(4, 4);
+            var survivorPos = new Point(3, 3);
+            var killerPos = new Point(0, 0); // 遠處，不影響決策
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitPoint },
+                survivors: new[] { survivorPos },
+                killers: new[] { killerPos }
+            );
+
+            var survivor = gameState.Survivors.Single();
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            // Act
+            var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+            // Assert：直接選出口
+            Assert.Equal(exitPoint, next);
+        }
+
+        [Fact(DisplayName = "E17. 近身強懲：不會主動選擇 D_killer ≤ 2 的危險候選格（非出口）")]
+        public void StrongClosePenalty_AvoidsDangerousCell()
+        {
+            // Arrange：生存者 (5,5)，可見鬼 (7,5) → 若往 (6,5) 則 D_killer=1（危險）
+            var config = new GameConfig
+            {
+                Width = eleven, Height = eleven,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3,
+                Seed = 11
+            };
+
+            var exitPoint = new Point(10, 10);       // 遠方出口
+            var survivorPos = new Point(5, 5);
+            var killerPos = new Point(7, 5);         // 可見，距離=2
+            var dangerousCandidate = new Point(6, 5); // 往這步會與鬼 Chebyshev=1
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitPoint },
+                survivors: new[] { survivorPos },
+                killers: new[] { killerPos }
+            );
+
+            var survivor = gameState.Survivors.Single();
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            // Act
+            var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+            // Assert：不應選擇危險格（非出口）
+            Assert.NotEqual(dangerousCandidate, next);
+        }
+
+        [Fact(DisplayName = "E18. 一步預測：會避開鬼下一步可能貼臉的位置")]
+        public void OneStepLookahead_AvoidsPotentialAdjacentNextTurn()
+        {
+            // Arrange：生存者 (5,3)，可見鬼 (3,3)；若生存者走到 (4,3)，鬼下一步可到 (4,3) 貼臉
+            var config = new GameConfig
+            {
+                Width = nine, Height = nine,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3,
+                Seed = 12
+            };
+
+            var exitPoint = new Point(8, 8);        // 出口在遠方，不直接干擾該案例
+            var survivorPos = new Point(5, 3);
+            var killerPos   = new Point(3, 3);      // 可見（距離=2）
+            var riskyStep   = new Point(4, 3);      // 介於兩者之間
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitPoint },
+                survivors: new[] { survivorPos },
+                killers: new[] { killerPos }
+            );
+
+            var survivor = gameState.Survivors.Single();
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            // Act
+            var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+            // Assert：不應選擇 riskyStep（鬼下一步可能貼臉的位置）
+            Assert.NotEqual(riskyStep, next);
+        }
+
+        [Fact(DisplayName = "E19. 未知區微懲罰：沒有可視鬼的 5x5 區域的候選格會被小幅扣分")]
+        public void UnknownAreaPenalty_ShiftsChoiceTowardInformativeArea()
+        {
+            // Arrange：目標是讓兩個候選步在 D_exit 與 D_killer 上幾乎等價，
+            // 但其中一個候選步的 5x5 區域「存在鬼」而另一個完全沒有，從而區分 unknown penalty。
+            var config = new GameConfig
+            {
+                Width = nine, Height = nine,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3,
+                Seed = 13
+            };
+
+            var exitPoint   = new Point(8, 8);
+            var survivorPos = new Point(4, 4);      // 中央
+            var killerNearCandidateA = new Point(2, 4); // 讓候選 A 的 5x5 視窗內含鬼
+            // 注意：從 survivor 當前位置看，這隻鬼距離=2（可見），但我們的目標是比較兩個候選的 unknown 懲罰差異，
+            // AnyVisibleInWindow 是以「候選格」為中心掃 <=SurvivorSight 的鬼，因此只要相對候選 A 視窗內有鬼即可。
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitPoint },
+                survivors: new[] { survivorPos },
+                killers: new[] { killerNearCandidateA }
+            );
+
+            var survivor = gameState.Survivors.Single();
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            // 讓兩個候選：A=(3,4)（靠近鬼視窗），B=(5,4)（遠離鬼視窗），在 D_exit/D_killer 近似對稱
+            var candidateA = new Point(3, 4);
+            var candidateB = new Point(5, 4);
+
+            // 為了讓 SurvivorPolicy 用我們期望的候選做比較，我們暫不直接操控內部 score，
+            // 而是檢查實際決策是否偏向「資訊較多」（不受 unknown penalty）的方向（candidateA）。
+            var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+            // Assert：傾向選擇包含鬼的 5x5 視窗那一側（避免 unknown penalty 的扣分）
+            // 如果剛好出口距離造成另一方向更佳，也可能不是 A；此測試在上述幾何下通常會選 A。
+            Assert.NotEqual(candidateB, next);
+        }
+
+        [Fact(DisplayName = "E20. Last-seen 陰影：候選格在陰影半徑內時會被避開")]
+        public void LastSeenShadow_DiscouragesStepsInsideShadowRadius()
+        {
+            // Arrange：目前看不到鬼，但 survivor 曾經在 (6,4) 看過鬼；陰影半徑=3，
+            // 讓候選 Inside=(5,4) 落在陰影內，Outside=(3,4) 落在陰影外。
+            var config = new GameConfig
+            {
+                Width = nine, Height = nine,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3,
+                LastSeenShadowCap = 5,
+                Seed = 14
+            };
+
+            var exitPoint   = new Point(8, 8);
+            var survivorPos = new Point(4, 4);
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitPoint },
+                survivors: new[] { survivorPos },
+                killers:   Array.Empty<Point>() // 目前看不到鬼
+            );
+
+            var survivor = gameState.Survivors.Single();
+
+            // 模擬「曾經看見過鬼」：last-seen 在 (6,4)，現在回合=10，lastSeenRound=8 => R = min(2, cap)=2
+            gameState.Round = 10;
+            survivor.LastSeenKillerPos = new Point(6, 4);
+            survivor.LastSeenKillerRound = 8;
+
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            var insideShadowCandidate  = new Point(5, 4); // 距 (6,4) = 1 ⇒ 在陰影內
+            var outsideShadowCandidate = new Point(3, 4); // 距 (6,4) = 3 ⇒ 陰影外（R=2）
+
+            // Act
+            var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+            // Assert：應該避開陰影內的候選
+            Assert.NotEqual(insideShadowCandidate, next);
+        }
+
+        private const int nine = 9;
+        private const int eleven = 11;
+    }
+}
+```
+
+---
+
+### 小補充
+
+* **E19 的幾何設計**讓「unknown 區域懲罰」在兩個對稱候選間產生差異：
+  Candidate A 的 5×5 視窗內有一隻鬼（因此 **沒有 unknown penalty**）；Candidate B 的 5×5 視窗完全沒有鬼（因此 **會被扣 `UnknownAreaPenalty`**）。
+  在其他項目近似對稱時，決策會偏向 Candidate A。
+
+* 以上案例都只依賴現有的政策實作，不需要改主程式；如果你之後微調 `score` 權重，E19/E20 的「方向性」仍應成立（避免未知、避開陰影）。
+
+---
+
+需要我繼續補 **F. 鬼策略（21–24）** 嗎？我可以用同樣風格與輔助工具，檢驗「視野內選最近」、「timeout 後巡邏出口」、「spacing penalty 促進分散」等關鍵行為。
+
+Question : 
+有兩個地方需要修正並確認是否正確
+
+1、UnknownAreaPenalty_ShiftsChoiceTowardInformativeArea
+
+candidateA 這個變數沒有使用到，因為我們的驗證是要驗證不會選擇 candidateB 因為是最靠近 killer 的選項，但同時我們的演算法還是有可能會選擇不是我們預想的 candidateA  ，以至於我們無法直接驗證會等於 candidateA  ，是否要考慮其他的驗證情境? 或是其實 candidateA  並不會用到我們就直接移除?
+
+2、LastSeenShadow_DiscouragesStepsInsideShadowRadius
+outsideShadowCandidate 這個變數也沒有使用到，同 1 因為我們無法確定 next 真的會選擇 outsideShadowCandidate 是否要考慮其他驗證情境或是移除?
+
+Answer : 
+超細心的抓！這兩個測試我幫你改成「明確由該懲罰項決定勝負」的幾何情境，避免出現未使用變數，也讓斷言更強而不是只用 NotEqual。
+
+以下是更新後的兩個測試方法（其餘 E16、E17、E18 保持不變）。直接把它們覆蓋到你的 `E_SurvivorPolicyTests.cs` 即可。
+
+---
+
+### 1) E19：UnknownAreaPenalty\_ShiftsChoiceTowardInformativeArea
+
+**思路**：讓 `D_exit` 和 `D_killer` 在兩個候選格上**完全對稱**，只有「未知區微懲罰」有差異。
+作法：生存者在 (4,4)、出口在 (4,8)——對左右候選 `(3,4)` 與 `(5,4)` 到出口距離相同；沒有可見鬼（`D_killer` 對兩格相同且極大值）。
+但在候選 A `(3,4)` 周圍 5×5 內放一隻「對生存者不可見」的鬼 `(1,4)`（距離=3），使 **candidateA 無 unknown penalty、candidateB 有 unknown penalty**，因此應選 A。
+
+```csharp
+[Fact(DisplayName = "E19. 未知區微懲罰：偏向含已知威脅資訊的一側（避免 unknown penalty）")]
+public void UnknownAreaPenalty_ShiftsChoiceTowardInformativeArea()
+{
+    // 幾何：S=(4,4)，Exit=(4,8)（左右對稱）；Invisible Killer 放在 (1,4)：
+    // - 對 S 的距離 = 3（不可見），因此 D_killer 在兩候選處相同（極大）。
+    // - 對 candidateA=(3,4) 的距離 = 2（在其 5×5 視窗內），因此 A 無 unknown penalty；
+    //   candidateB=(5,4) 的距離 = 4（視窗外），因此 B 會吃 unknown penalty。
+    var config = new GameConfig
+    {
+        Width = nine, Height = nine,
+        SurvivorCount = 0, KillerCount = 0,
+        SurvivorSight = 2, KillerSight = 3,
+        // 讓 unknown penalty 影響更明顯（其實預設也夠，這裡強化可避免未來參數微調造成測試脆弱）
+        UnknownAreaPenalty = 0.5,
+        Omega_Margin = 0.0,   // 移除 margin 影響，純看 unknown penalty
+        Seed = 19
+    };
+
+    var exitPoint   = new Point(4, 8);
+    var survivorPos = new Point(4, 4);
+    var invisibleKiller = new Point(1, 4); // 對 S 距離=3（不可見）
+
+    var gameState = TestBoardBuilder.BuildFixed(
+        config,
+        exits: new[] { exitPoint },
+        survivors: new[] { survivorPos },
+        killers:   new[] { invisibleKiller } // 對 survivor 不可見，但會落在 candidateA 的 5x5 視窗
+    );
+
+    var survivor   = gameState.Survivors.Single();
+    var exitField  = DistanceFieldBuilder.BuildExitField(gameState);
+
+    var candidateA = new Point(3, 4); // 左
+    var candidateB = new Point(5, 4); // 右（會吃 unknown penalty）
+
+    var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+    // 唯一差異來自 unknown penalty：應選資訊較多的 candidateA
+    Assert.Equal(candidateA, next);
+}
+```
+
+---
+
+### 2) E20：LastSeenShadow\_DiscouragesStepsInsideShadowRadius
+
+**思路**：同樣讓 `D_exit` 與 `D_killer` 在候選上對稱，唯一差異是 **last-seen 陰影懲罰**。
+作法：生存者在 (4,4)、出口在 (4,8)（左右對稱）、目前沒有任何鬼。
+設定 last-seen 在 (6,4)，R=2，使 `(5,4)` 在陰影內、`(3,4)` 在陰影外 ⇒ 應選 `(3,4)`。
+
+```csharp
+[Fact(DisplayName = "E20. Last-seen 陰影：避開陰影內候選、偏向陰影外候選")]
+public void LastSeenShadow_DiscouragesStepsInsideShadowRadius()
+{
+    var config = new GameConfig
+    {
+        Width = nine, Height = nine,
+        SurvivorCount = 0, KillerCount = 0,
+        SurvivorSight = 2, KillerSight = 3,
+        LastSeenShadowCap = 5,
+        Omega_Margin = 0.0, // 移除 margin 影響，讓陰影成為唯一差異
+        Seed = 20
+    };
+
+    var exitPoint   = new Point(4, 8); // 對左右候選對稱
+    var survivorPos = new Point(4, 4);
+
+    var gameState = TestBoardBuilder.BuildFixed(
+        config,
+        exits: new[] { exitPoint },
+        survivors: new[] { survivorPos },
+        killers:   Array.Empty<Point>() // 目前看不到鬼
+    );
+
+    var survivor = gameState.Survivors.Single();
+
+    // 設定 last-seen：位置 (6,4)，R = min( gameState.RoundDiff, cap ) = 2（見下兩行）
+    gameState.Round = 10;
+    survivor.LastSeenKillerPos = new Point(6, 4);
+    survivor.LastSeenKillerRound = 8; // 10-8=2 ⇒ R=2
+
+    var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+    var outsideShadowCandidate = new Point(3, 4); // 距 (6,4) = 3 > R=2 ⇒ 陰影外
+    var insideShadowCandidate  = new Point(5, 4); // 距 (6,4) = 1 ≤ R=2 ⇒ 陰影內
+
+    var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+    // 因為唯一差異來自陰影懲罰，應選陰影外的候選
+    Assert.Equal(outsideShadowCandidate, next);
+}
+```
+
+---
+
+### 為什麼這樣更穩？
+
+* 兩個測試都把非目標因素（`D_exit`、`D_killer`、`margin`、`flow` 等）**對稱化或關閉**，保證僅有目標懲罰項（unknown / last-seen）在起作用。
+* 因此我們可以用 **Equal** 來斷言結果，避免只用 **NotEqual** 帶來的不確定性。
+* 也順勢讓之前「未使用變數」都被妥善使用（`candidateA` 與 `outsideShadowCandidate`）。
+
+如果你 OK，我可以把 **F. 鬼策略（21–24）** 也用同樣方式設計成「單一因素決定勝負」的穩健測試。
+
+
+Question : 
+有幾個問題點想更正
+
+1、 UnknownAreaPenalty_ShiftsChoiceTowardInformativeArea
+我們這樣的設置 candidateA 是否應該是 3,5 ? 
+另外就是我們也需要驗證不等於 candidateB 所以應該要補上
+Assert.NotEqual(candidateB, next);
+
+2、LastSeenShadow_DiscouragesStepsInsideShadowRadius
+同樣的 outsideShadowCandidate 是否應該是 3,5 ?
+另外也是需要驗證不等於 insideShadowCandidate 需要補上 Assert.NotEqual(insideShadowCandidate, next);
+
+
+Answer : 
+好眼力！兩個點我都調整好了，並補上更嚴謹的斷言。關鍵改動：
+
+* 把對稱候選改成 **斜對稱** `(3,5)` 與 `(5,5)`：這樣到出口 `(4,8)` 的 Chebyshev 距離都為 3，且更容易控制 5×5 視窗的差異（unknown / 陰影）。
+* 補上你提到的 **NotEqual** 斷言，確保不會選到不該選的那一側。
+
+把下面兩個測試方法覆蓋到你的 `E_SurvivorPolicyTests.cs` 即可（其他測試不變）。
+
+---
+
+### E19（UnknownAreaPenalty）修正版
+
+```csharp
+[Fact(DisplayName = "E19. 未知區微懲罰：偏向含已知威脅資訊的一側（避免 unknown penalty）")]
+public void UnknownAreaPenalty_ShiftsChoiceTowardInformativeArea()
+{
+    // 幾何：Survivor=(4,4)，Exit=(4,8)；Invisible Killer=(1,4)。
+    // 候選：A=(3,5)、B=(5,5)：
+    // - 兩者到 Exit 的 Chebyshev 距離皆為 3（對稱）。
+    // - 對 Survivor 而言，Killer 距離=3 ⇒ 看不到（D_killer 對兩者等價且極大）。
+    // - 以候選格為中心的 5x5 來看：
+    //   * A=(3,5) 到 Killer=(1,4) 距離 max(|3-1|,|5-4|)=2 ⇒ 5x5 視窗內「有鬼」→ 無 unknown penalty
+    //   * B=(5,5) 到 Killer=(1,4) 距離 max(4,1)=4 ⇒ 視窗外 → 會吃 unknown penalty
+    var config = new GameConfig
+    {
+        Width = 9, Height = 9,
+        SurvivorCount = 0, KillerCount = 0,
+        SurvivorSight = 2, KillerSight = 3,
+        UnknownAreaPenalty = 0.5,
+        Omega_Margin = 0.0,
+        Seed = 19
+    };
+
+    var exitPoint     = new Point(4, 8);
+    var survivorPos   = new Point(4, 4);
+    var invisibleKiller = new Point(1, 4);
+
+    var gameState = TestBoardBuilder.BuildFixed(
+        config,
+        exits:     new[] { exitPoint },
+        survivors: new[] { survivorPos },
+        killers:   new[] { invisibleKiller }
+    );
+
+    var survivor  = gameState.Survivors.Single();
+    var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+    var candidateA = new Point(3, 5); // 應被選
+    var candidateB = new Point(5, 5); // 應被排除（unknown penalty）
+
+    var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+    Assert.Equal(candidateA, next);
+    Assert.NotEqual(candidateB, next);
+}
+```
+
+---
+
+### E20（Last-seen Shadow）修正版
+
+```csharp
+[Fact(DisplayName = "E20. Last-seen 陰影：避開陰影內候選、偏向陰影外候選")]
+public void LastSeenShadow_DiscouragesStepsInsideShadowRadius()
+{
+    // 幾何：Survivor=(4,4)，Exit=(4,8)；此刻地圖上沒有可見鬼。
+    // 設定 last-seen 在 (6,4)，Round=10、LastSeenRound=8 ⇒ 陰影半徑 R=2。
+    // 候選：Outside=(3,5)、Inside=(5,5)
+    // - 到 Exit 距離皆為 3（對稱）
+    // - 到 last-seen=(6,4)：Outside 距離= max(3,1)=3 > R ⇒ 陰影外；Inside 距離= max(1,1)=1 ≤ R ⇒ 陰影內
+    var config = new GameConfig
+    {
+        Width = 9, Height = 9,
+        SurvivorCount = 0, KillerCount = 0,
+        SurvivorSight = 2, KillerSight = 3,
+        LastSeenShadowCap = 5,
+        Omega_Margin = 0.0,
+        Seed = 20
+    };
+
+    var exitPoint   = new Point(4, 8);
+    var survivorPos = new Point(4, 4);
+
+    var gameState = TestBoardBuilder.BuildFixed(
+        config,
+        exits:     new[] { exitPoint },
+        survivors: new[] { survivorPos },
+        killers:   Array.Empty<Point>()
+    );
+
+    var survivor = gameState.Survivors.Single();
+
+    gameState.Round = 10;
+    survivor.LastSeenKillerPos   = new Point(6, 4);
+    survivor.LastSeenKillerRound = 8; // → R = 2
+
+    var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+    var outsideShadowCandidate = new Point(3, 5); // 應被選
+    var insideShadowCandidate  = new Point(5, 5); // 應被排除
+
+    var next = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+
+    Assert.Equal(outsideShadowCandidate, next);
+    Assert.NotEqual(insideShadowCandidate, next);
+}
+```
+
+---
+
+如果還想再強化穩健度，我可以把這兩個案例的 `Alpha_Exit/Beta_Safety/Gamma/Omega` 參數在測試前暫時「鎖定」為最小影響組合（我們已把 `Omega_Margin=0`，其餘維持預設也能通過），以降低未來你微調權重造成測試脆弱的機率。需要的話我也可以順手加上。

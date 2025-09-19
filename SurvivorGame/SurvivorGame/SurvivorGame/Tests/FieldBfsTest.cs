@@ -13,7 +13,7 @@ public class FieldBfsTest
     // 限制地圖範圍
     private const int Five = 5;
 
-    [Fact(DisplayName = "D14. 出口距離場 = 對所有出口 Chebyshev 距離的最小值（多源 BFS）")]
+    [Fact(DisplayName = "出口距離場 = 對所有出口 Chebyshev 距離的最小值（多源 BFS）")]
     public void ExitDistanceField_EqualsMinChebyshevToAllExits()
     {
         // Arrange：5x5，小地圖兩個出口（對角）
@@ -48,7 +48,7 @@ public class FieldBfsTest
         }
     }
 
-    [Fact(DisplayName = "D15a. 可視鬼距離場：只有可見鬼為多源；不可見鬼不影響")]
+    [Fact(DisplayName = "可視鬼距離場：只有可見鬼為多源；不可見鬼不影響")]
     public void VisibleKillerField_UsesOnlyVisibleKillers()
     {
         // Arrange：生存者在 (1,1)
@@ -91,7 +91,7 @@ public class FieldBfsTest
         }
     }
 
-    [Fact(DisplayName = "D15b. 可視鬼距離場：多隻可見鬼時，取最小距離（多源）")]
+    [Fact(DisplayName = "可視鬼距離場：多隻可見鬼時，取最小距離（多源）")]
     public void VisibleKillerField_TakesMinimumOverMultipleVisibleKillers()
     {
         // Arrange：生存者在中心 (2,2)，兩隻可見鬼在 (4,2) 與 (0,2)（皆距離=2）
