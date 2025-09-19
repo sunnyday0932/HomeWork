@@ -3990,3 +3990,216 @@ public void SpacingPenalty_PrefersNonAdjacentCandidate_WhenDistanceGainIsEqual()
 * **在策略中加入明確的 tie-break**（例如分數相等時，優先 `dx>0`、再 `dy`、或依方位排序），讓測試可預期。
 
 但就測試穩健度而言，**調幾何使唯一差異來自 spacing**是最乾淨的做法。
+
+Quesiton  : 
+
+我認為目前這樣的方法比起另外兩個建議比較適合，所以我們可以開始 G 的測試了
+
+Answer : 
+太好了～按照你的風格與目前實作狀態，我把 **G. 衝突解算（25–28）** 的測試寫好了。
+重點：所有 `for/foreach/while` 都加上 `{ }`、命名清晰、而且我特別處理了 **28：跟隨鏈**——目前你的 `MoveConflictResolver` 並**尚未**實作一般長度 > 2 的循環偵測（只有雙向交換 no-swap），所以我提供：
+
+* 一個 **\[Skip] 的「期望行為」測試**（等之後你實作循環回退時再開啟）；
+* 一個 **「目前行為」的保護測試**，避免未來不小心改壞。
+
+把下面檔案加到 `TagPOC.Tests` 專案即可執行。
+
+---
+
+## `G_ConflictResolverTests.cs`
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using TagPOC;
+using Xunit;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// G. 衝突解算（25–28）
+    /// 25) 同格競爭：高分者得
+    /// 26) 同分 tie-break by Id
+    /// 27) 禁止對向交換（swap）
+    /// 28) 跟隨鏈（目前程式尚未支援一般循環；附上 Skip 的期望測試 + 目前行為測試）
+    /// </summary>
+    public class G_ConflictResolverTests
+    {
+        [Fact(DisplayName = "G25. 同格競爭：高分者佔位，其他人原地")]
+        public void HigherScoreWins_OnSameTargetCell()
+        {
+            // 小盤面，兩名生存者搶同一格
+            var config = new GameConfig
+            {
+                Width = 7, Height = 7,
+                SurvivorCount = 0, KillerCount = 0,
+                Seed = 250
+            };
+
+            var exitPoints = Array.Empty<Point>();
+            var survivors = new[] { new Point(3, 3), new Point(5, 3) };
+            var killers = Array.Empty<Point>();
+
+            var gameState = TestBoardBuilder.BuildFixed(config, exitPoints, survivors, killers);
+            var survivorA = gameState.Survivors[0]; // Id=0
+            var survivorB = gameState.Survivors[1]; // Id=1
+
+            var targetCell = new Point(4, 3); // 兩人都想進來
+            var submissions = new List<(Survivor actor, Point target, double score)>
+            {
+                (survivorA, targetCell, score: 0.8),
+                (survivorB, targetCell, score: 0.2)
+            };
+
+            var decided = MoveConflictResolver.ResolveNoOverlapSwap(gameState, submissions);
+
+            Assert.Equal(targetCell, decided[survivorA.Id]); // 高分者得
+            Assert.Equal(survivorB.Pos, decided[survivorB.Id]); // 低分者原地
+        }
+
+        [Fact(DisplayName = "G26. 同分 tie-break：Id 較小者佔位")]
+        public void TieBreakById_WhenScoresEqual_OnSameTargetCell()
+        {
+            var config = new GameConfig
+            {
+                Width = 7, Height = 7,
+                SurvivorCount = 0, KillerCount = 0,
+                Seed = 260
+            };
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: Array.Empty<Point>(),
+                survivors: new[] { new Point(3, 3), new Point(5, 3) },
+                killers: Array.Empty<Point>());
+
+            var survivorA = gameState.Survivors[0]; // Id=0
+            var survivorB = gameState.Survivors[1]; // Id=1
+
+            var targetCell = new Point(4, 3);
+            var submissions = new List<(Survivor actor, Point target, double score)>
+            {
+                (survivorA, targetCell, score: 1.0),
+                (survivorB, targetCell, score: 1.0) // 同分
+            };
+
+            var decided = MoveConflictResolver.ResolveNoOverlapSwap(gameState, submissions);
+
+            Assert.Equal(targetCell, decided[survivorA.Id]);   // Id 小者贏
+            Assert.Equal(survivorB.Pos, decided[survivorB.Id]); // 另一位原地
+        }
+
+        [Fact(DisplayName = "G27. 禁止對向交換：兩人互換彼此格子 ⇒ 皆原地")]
+        public void NoSwap_BothStay_WhenOppositeExchange()
+        {
+            var config = new GameConfig
+            {
+                Width = 7, Height = 7,
+                SurvivorCount = 0, KillerCount = 0,
+                Seed = 270
+            };
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: Array.Empty<Point>(),
+                survivors: new[] { new Point(3, 3), new Point(4, 3) },
+                killers: Array.Empty<Point>());
+
+            var a = gameState.Survivors[0];
+            var b = gameState.Survivors[1];
+
+            var submissions = new List<(Survivor actor, Point target, double score)>
+            {
+                (a, b.Pos, score: 1.0),
+                (b, a.Pos, score: 1.0)
+            };
+
+            var decided = MoveConflictResolver.ResolveNoOverlapSwap(gameState, submissions);
+
+            Assert.Equal(a.Pos, decided[a.Id]); // 原地
+            Assert.Equal(b.Pos, decided[b.Id]); // 原地
+        }
+
+        // === 28. 跟隨鏈（期望 vs 目前行為） ===
+
+        [Fact(DisplayName = "G28(expectation). 三人循環跟隨應阻擋（目前程式尚未支援）", Skip = "MoveConflictResolver 尚未實作一般循環（>2）偵測/回退；此測試為未來功能預留")]
+        public void FollowChain_ShouldBePrevented_WhenThreeCycle()
+        {
+            // 期望行為（尚未實作）：
+            // A: (3,3) -> B.pos
+            // B: (4,3) -> C.pos
+            // C: (5,3) -> A.pos
+            // 三人形成 3-cycle，應回退以避免循環（例如讓後序者原地）。
+            var config = new GameConfig { Width = 9, Height = 9, SurvivorCount = 0, KillerCount = 0, Seed = 280 };
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: Array.Empty<Point>(),
+                survivors: new[] { new Point(3, 3), new Point(4, 3), new Point(5, 3) },
+                killers: Array.Empty<Point>());
+
+            var a = gameState.Survivors[0];
+            var b = gameState.Survivors[1];
+            var c = gameState.Survivors[2];
+
+            var submissions = new List<(Survivor actor, Point target, double score)>
+            {
+                (a, b.Pos, 1.0),
+                (b, c.Pos, 1.0),
+                (c, a.Pos, 1.0)
+            };
+
+            var decided = MoveConflictResolver.ResolveNoOverlapSwap(gameState, submissions);
+
+            // 期望（尚未實作）：至少一人被回退，避免三人互換結束狀態
+            Assert.NotEqual(b.Pos, decided[a.Id]);
+            Assert.NotEqual(c.Pos, decided[b.Id]);
+            Assert.NotEqual(a.Pos, decided[c.Id]);
+        }
+
+        [Fact(DisplayName = "G28(current). 目前行為：三人循環跟隨會被允許（未阻擋）")]
+        public void FollowChain_CurrentlyAllowed_ThreeCycle()
+        {
+            // 目前版本只阻擋「兩人對向交換」，不處理一般循環。
+            var config = new GameConfig { Width = 9, Height = 9, SurvivorCount = 0, KillerCount = 0, Seed = 281 };
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: Array.Empty<Point>(),
+                survivors: new[] { new Point(3, 3), new Point(4, 3), new Point(5, 3) },
+                killers: Array.Empty<Point>());
+
+            var a = gameState.Survivors[0];
+            var b = gameState.Survivors[1];
+            var c = gameState.Survivors[2];
+
+            var submissions = new List<(Survivor actor, Point target, double score)>
+            {
+                (a, b.Pos, 1.0),
+                (b, c.Pos, 1.0),
+                (c, a.Pos, 1.0)
+            };
+
+            var decided = MoveConflictResolver.ResolveNoOverlapSwap(gameState, submissions);
+
+            // 驗證目前的實際行為（允許 3-cycle）：每個人都移動到下家的起點
+            Assert.Equal(b.Pos, decided[a.Id]);
+            Assert.Equal(c.Pos, decided[b.Id]);
+            Assert.Equal(a.Pos, decided[c.Id]);
+        }
+    }
+}
+```
+
+---
+
+### 備註與後續建議
+
+* **G25/G26/G27** 會通過，因為你的解算器已處理：同格競爭（依 score、再依 id）與雙向交換禁止。
+* **G28**：目前僅有「現行行為」測試。若你打算支援一般循環（例如長度 3 以上），可以把 resolver 增強為：
+
+  1. 先建立「起點 → 目標」的映射圖；
+  2. 找所有 **有向環**（長度 ≥ 2）；
+  3. 對長度=2 的環維持現有處理（雙向互換 → 皆回退）；
+  4. 對長度≥3 的環，選擇一個策略（例如「除環中得分最低者回退，其餘照常」或「全員回退」），之後把上面的 **Skip 測試**打開並依策略調整斷言。
+
+要我順手把「三人以上循環阻擋」也實作到 `MoveConflictResolver` 給你一個可通過的版本嗎？我可以採「環中只有最高分前進，其餘回退」的規則，比較直覺而且易測。
