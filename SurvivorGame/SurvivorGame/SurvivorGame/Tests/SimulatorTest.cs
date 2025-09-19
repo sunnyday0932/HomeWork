@@ -17,7 +17,7 @@ public class SimulatorTest
             KillerCount = 1,
             SurvivorSight = 2, // 5x5
             KillerSight = 3,   // 7x7
-            ExitCount = 3,
+            ExitCount = 2,
             Seed = 102,
             VerboseLog = false,
             PrintAsciiMapEachRound = false

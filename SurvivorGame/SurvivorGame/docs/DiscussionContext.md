@@ -5268,3 +5268,60 @@ if (!state.Survivors.Any(sv => sv.Alive))
 用小圖（例如 `30x30`）、`SurvivorCount=3`、`KillerCount=2` 跑個 50 場，看看 `summary.csv` 是否開始出現 `Survivor`；再把地圖放大到你要的 `100x100` 跑 300 場，檢查 `aggregate.json` 的 `which_side_higher` 與 `killer_win_rate`。
 
 如果你希望「不是**全員**都逃脫也能算生存者勝」（例如**至少一人**成功逃脫就判生存者勝），我可以再給你一個極小改動版本，把上面判斷放寬為 `state.SurvivorScore >= 1 && !state.Survivors.Any(...)` 或者直接在任何回合檢查 `state.SurvivorScore == state.Config.SurvivorCount` 就立即提早結束遊戲。
+
+Question : 
+為甚麼我們的 summary.csv rounds 會有 101 這種數字出現?
+
+Answer : 
+好問題！`summary.csv` 出現 **101** 的原因是我們在 `RunOneWithEvents` 的 **逾時（timeout）** 路徑回傳了 `state.Round`，而此時 `for` 迴圈已經跑完、`Round` 會等於 `MaxRounds + 1`。
+
+具體來說，我們的回合迴圈是：
+
+```csharp
+for (state.Round = 1; state.Round <= config.MaxRounds; state.Round++)
+{
+    // ...執行一整回合...
+}
+// 走到這裡代表時間到（沒有在迴圈內提前 return）
+return ("Killer", state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
+```
+
+當 `MaxRounds = 100`，迴圈結束時 `state.Round` 已自動變成 **101**，所以最後 `return` 就把 **101** 寫進 `summary.csv`。
+
+# 快速修正
+
+把逾時路徑的回傳回合數改成 `config.MaxRounds`（或維護一個 `roundsPlayed` 計數器）。最小改動如下：
+
+```csharp
+// 迴圈後（時間到）
+return (
+    "Killer",
+    state.SurvivorScore,
+    state.KillerScore,
+    /* rounds: */ config.MaxRounds,
+    state.Log.Events.ToList()
+);
+```
+
+如果你想要更語義化，也可以在函式一開始宣告並維護一個回合計數器：
+
+```csharp
+int roundsPlayed = 0;
+
+for (state.Round = 1; state.Round <= config.MaxRounds; state.Round++)
+{
+    // ...整個回合...
+    roundsPlayed++; // 在回合末尾加一
+    // 若在回合中途提前結束，就直接 return (winner, ..., roundsPlayed, ...)
+}
+
+// 逾時
+return ("Killer", state.SurvivorScore, state.KillerScore, roundsPlayed, state.Log.Events.ToList());
+```
+
+# 為什麼其他情況沒問題？
+
+* 「鬼 Phase 抓光」或「生存者 Phase 全員逃脫 / 被捕」的路徑，都是**在迴圈內** `return`，因此使用的回合數是**當回合的 `state.Round`**，不會 +1。
+* 只有「時間到」這條路徑是在**迴圈結束後**回傳，才會踩到 `Round = MaxRounds + 1` 的情況。
+
+改完後，`summary.csv` 的 rounds 在逾時場次就會正確顯示為 **100**（或你設定的 `MaxRounds`）。

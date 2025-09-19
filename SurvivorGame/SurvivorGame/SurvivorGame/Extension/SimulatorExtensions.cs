@@ -128,8 +128,8 @@ public static class SimulatorExtensions
             }
         }
 
-        // 時間到：規則=鬼勝
-        return ("Killer", state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
+        // 第 100 回合：規則=鬼勝
+        return ("Killer", state.SurvivorScore, state.KillerScore, config.MaxRounds, state.Log.Events.ToList());
     }
 
     /// <summary>
