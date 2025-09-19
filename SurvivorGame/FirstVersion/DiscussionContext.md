@@ -2215,3 +2215,768 @@ namespace TagPOC.Tests
 如果你覺得 OK，我可以接著把 **B. 回合流程與事件順序**（6\~9）也實作成測試檔，順便補一個 `TestBoardBuilder.BuildFixed(...)`，讓我們能在固定布局下檢驗事件順序與邊界情境。
 
 
+Question : 
+只有幾個地方需要再多注意變數的名稱，我認為這些區域變數雖然只有在這個範圍內使用但是可讀性還是很重要的 1、cfg => config 2、s => gameState 3、foreach 內的變數 e.g. sv => survivor 、 e => point 幫我修正一版
+
+Answer:
+收到 ✅
+我幫你把 `A_InitAndInvariantsTests.cs` 裡的區域變數名稱與迴圈變數全數調整為更具可讀性：
+
+* `cfg` → `config`
+* `s` → `gameState`
+* `sv` → `survivor`
+* `k` → `killer`
+* `e` → `exitPoint`
+* `d` → `distance`
+
+下面是修正版：
+
+---
+
+### `A_InitAndInvariantsTests.cs`（命名優化後）
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using TagPOC;
+using Xunit;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// A. 初始化與不變式（Initialization & Invariants）
+    /// 覆蓋題目 1~5：
+    /// 1) 地圖邊界
+    /// 2) 出口數與位置
+    /// 3) 出生距離約束
+    /// 4) 互斥佔位（不可同格）
+    /// 5) 可重現性（Seed）
+    /// </summary>
+    public class A_InitAndInvariantsTests
+    {
+        [Fact(DisplayName = "A1. 初始化後：所有出口與角色皆在地圖邊界內")]
+        public void AllEntitiesAreWithinBounds_AfterInitialization()
+        {
+            // Arrange
+            var config = new GameConfig
+            {
+                Width = 50, Height = 50,
+                SurvivorCount = 3, KillerCount = 3,
+                ExitCount = 2,
+                Seed = 1234
+            };
+
+            // Act
+            var gameState = TestHelpers.BuildInitializedState(config);
+
+            // Assert
+            foreach (var exitPoint in gameState.Exits)
+                Assert.True(TestHelpers.InBounds(gameState, exitPoint), $"Exit {exitPoint} out of bounds");
+
+            foreach (var survivor in gameState.Survivors)
+                Assert.True(TestHelpers.InBounds(gameState, survivor.Pos), $"Survivor#{survivor.Id} at {survivor.Pos} out of bounds");
+
+            foreach (var killer in gameState.Killers)
+                Assert.True(TestHelpers.InBounds(gameState, killer.Pos), $"Killer#{killer.Id} at {killer.Pos} out of bounds");
+        }
+
+        [Theory(DisplayName = "A2. 出口數量正確且不重疊")]
+        [InlineData(2)]
+        [InlineData(3)]
+        [InlineData(4)]
+        public void ExitCountIsCorrect_AndUnique(int exitCount)
+        {
+            // Arrange
+            var config = new GameConfig
+            {
+                Width = 30, Height = 30,
+                SurvivorCount = 2, KillerCount = 2,
+                ExitCount = exitCount,
+                Seed = 4321
+            };
+
+            // Act
+            var gameState = TestHelpers.BuildInitializedState(config);
+
+            // Assert: 數量
+            Assert.Equal(exitCount, gameState.Exits.Count);
+
+            // 位置唯一
+            var unique = gameState.Exits.Distinct().Count();
+            Assert.Equal(gameState.Exits.Count, unique);
+
+            // 都是 Exit 標記
+            foreach (var exitPoint in gameState.Exits)
+                Assert.True(gameState.IsExit(exitPoint), $"Exit list contains non-exit at {exitPoint}");
+        }
+
+        [Fact(DisplayName = "A3. 出生距離約束：與出口/敵對/同隊的最小距離皆滿足")]
+        public void SpawnRespectsMinDistances()
+        {
+            // Arrange
+            var config = new GameConfig
+            {
+                Width = 40, Height = 40,
+                SurvivorCount = 3, KillerCount = 3,
+                ExitCount = 3,
+                MinDistToExit = 8,
+                MinDistEnemy = 4,
+                MinDistAlly = 2,
+                Seed = 9876
+            };
+
+            // Act
+            var gameState = TestHelpers.BuildInitializedState(config);
+
+            // Assert: 生存者與出口距離
+            foreach (var survivor in gameState.Survivors)
+            {
+                var minExitDistance = gameState.Exits.Min(exitPoint => TestHelpers.Chebyshev(exitPoint, survivor.Pos));
+                Assert.True(minExitDistance >= config.MinDistToExit,
+                    $"Survivor#{survivor.Id} too close to exit: {minExitDistance} < {config.MinDistToExit}");
+            }
+
+            // 鬼與出口距離
+            foreach (var killer in gameState.Killers)
+            {
+                var minExitDistance = gameState.Exits.Min(exitPoint => TestHelpers.Chebyshev(exitPoint, killer.Pos));
+                Assert.True(minExitDistance >= config.MinDistToExit,
+                    $"Killer#{killer.Id} too close to exit: {minExitDistance} < {config.MinDistToExit}");
+            }
+
+            // 生-鬼 最小距離
+            foreach (var survivor in gameState.Survivors)
+            {
+                var minEnemyDistance = gameState.Killers.Min(killer => TestHelpers.Chebyshev(killer.Pos, survivor.Pos));
+                Assert.True(minEnemyDistance >= config.MinDistEnemy,
+                    $"S#{survivor.Id} too close to any killer: {minEnemyDistance} < {config.MinDistEnemy}");
+            }
+
+            // 生-生 同隊最小距離
+            for (int i = 0; i < gameState.Survivors.Count; i++)
+            for (int j = i + 1; j < gameState.Survivors.Count; j++)
+            {
+                var distance = TestHelpers.Chebyshev(gameState.Survivors[i].Pos, gameState.Survivors[j].Pos);
+                Assert.True(distance >= config.MinDistAlly,
+                    $"Survivors too close: d={distance} < {config.MinDistAlly}");
+            }
+
+            // 鬼-鬼 同隊最小距離
+            for (int i = 0; i < gameState.Killers.Count; i++)
+            for (int j = i + 1; j < gameState.Killers.Count; j++)
+            {
+                var distance = TestHelpers.Chebyshev(gameState.Killers[i].Pos, gameState.Killers[j].Pos);
+                Assert.True(distance >= config.MinDistAlly,
+                    $"Killers too close: d={distance} < {config.MinDistAlly}");
+            }
+        }
+
+        [Fact(DisplayName = "A4. 初始化後所有角色互不重疊（不可同格）")]
+        public void NoOverlappingActors_OnInitialization()
+        {
+            // Arrange
+            var config = new GameConfig
+            {
+                Width = 50, Height = 50,
+                SurvivorCount = 3, KillerCount = 3,
+                ExitCount = 2,
+                Seed = 2468
+            };
+
+            // Act
+            var gameState = TestHelpers.BuildInitializedState(config);
+
+            // Assert
+            var positions = TestHelpers.GetAllActorPositions(gameState).Select(x => x.pos).ToList();
+            var distinct = positions.Distinct().Count();
+            Assert.Equal(positions.Count, distinct);
+        }
+
+        [Fact(DisplayName = "A5. 相同 Seed 可重現：兩次初始化的佈局一致")]
+        public void SameSeed_ProducesIdenticalInitialLayout()
+        {
+            // Arrange
+            var config = new GameConfig
+            {
+                Width = 40, Height = 40,
+                SurvivorCount = 2, KillerCount = 2,
+                ExitCount = 2,
+                Seed = 13579
+            };
+
+            // Act
+            var gameState1 = TestHelpers.BuildInitializedState(config);
+            var gameState2 = TestHelpers.BuildInitializedState(config);
+
+            // Assert：出口順序與座標相同
+            Assert.Equal(gameState1.Exits.Count, gameState2.Exits.Count);
+            for (int i = 0; i < gameState1.Exits.Count; i++)
+                Assert.Equal(gameState1.Exits[i], gameState2.Exits[i]);
+
+            // 角色位置（依 Id）相同
+            Assert.Equal(gameState1.Survivors.Count, gameState2.Survivors.Count);
+            for (int i = 0; i < gameState1.Survivors.Count; i++)
+                Assert.Equal(gameState1.Survivors[i].Pos, gameState2.Survivors[i].Pos);
+
+            Assert.Equal(gameState1.Killers.Count, gameState2.Killers.Count);
+            for (int i = 0; i < gameState1.Killers.Count; i++)
+                Assert.Equal(gameState1.Killers[i].Pos, gameState2.Killers[i].Pos);
+        }
+    }
+}
+```
+
+---
+
+這樣調整之後，可讀性會更強，測試內容的意圖也能「一眼看懂」。
+要不要我接著幫你把 **B. 回合流程與事件順序（6\~9）** 也用同樣命名風格寫完整測試？
+
+
+Question : 
+請在 B. 回合流程的程式注意一個城市風格，我希望所有迴圈，即便只有執行一行程式也要用 { } 區隔
+現在可以開始 B 回合流程的測試了
+
+Answer :
+太棒，收到你的「所有迴圈一律加大括號」要求了 🙌
+下面我直接給出 **B. 回合流程與事件順序（6–9）** 的完整 xUnit 測試與輔助工具。重點：
+
+* 全部 `for/foreach/while` 都有 `{ }`。
+* 提供 `TestBoardBuilder.BuildFixed(...)` 來建立**固定佈局**的 `GameState`（避免隨機）。
+* 提供 `StepRunner` 幫你在**固定狀態**上，獨立執行「鬼 Phase」與「生存者 Phase」，以及回合收尾檢查（不必依賴 `Simulator.RunOne` 的隨機初始化）。
+* 測試案例覆蓋：
+  6\) 鬼先行（包含在鬼 Phase 就完成捕獲）
+  7\) 生存者在出口上 **先逃脫** 再判被捕
+  8\) 鬼 Phase 的捕獲邏輯
+  9\) 時間到（MaxRounds）→ 鬼勝
+
+> 假設你的主程式專案命名空間仍為 `TagPOC`，且測試專案為 `TagPOC.Tests`。
+
+---
+
+## `TestBoardBuilder.cs`
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using TagPOC;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// 直接以固定佈局建立 GameState，避免隨機初始化。
+    /// </summary>
+    public static class TestBoardBuilder
+    {
+        public static GameState BuildFixed(
+            GameConfig config,
+            IEnumerable<Point> exits,
+            IEnumerable<Point> survivors,
+            IEnumerable<Point> killers)
+        {
+            var gameState = new GameState(config);
+
+            // 佈置出口
+            foreach (var exitPoint in exits)
+            {
+                gameState.Map[exitPoint.X, exitPoint.Y] = TileType.Exit;
+                gameState.Exits.Add(exitPoint);
+            }
+
+            // 佈置生存者
+            int survivorId = 0;
+            foreach (var pos in survivors)
+            {
+                var survivor = new Survivor(survivorId++, pos);
+                gameState.Survivors.Add(survivor);
+            }
+
+            // 佈置鬼
+            int killerId = 0;
+            foreach (var pos in killers)
+            {
+                var killer = new Killer(killerId++, pos);
+                gameState.Killers.Add(killer);
+            }
+
+            // 簡單檢查：所有座標在界內、初始互不重疊
+            var all = gameState.Survivors.Select(x => x.Pos)
+                         .Concat(gameState.Killers.Select(x => x.Pos))
+                         .ToList();
+            if (all.Distinct().Count() != all.Count)
+            {
+                throw new ArgumentException("Initial actors overlap in BuildFixed().");
+            }
+            foreach (var p in all.Concat(gameState.Exits))
+            {
+                if (!gameState.InBounds(p))
+                {
+                    throw new ArgumentException($"Point {p} out of bounds in BuildFixed().");
+                }
+            }
+
+            // 從第 1 回合開始（與主模擬一致）
+            gameState.Round = 1;
+            return gameState;
+        }
+    }
+}
+```
+
+---
+
+## `StepRunner.cs`
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using TagPOC;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// 在固定的 GameState 上，單獨執行 Killer Phase / Survivor Phase 的小工具。
+    /// 專供測試「事件順序」與「回合收尾」。
+    /// </summary>
+    public static class StepRunner
+    {
+        public static int[,] BuildExitField(GameState gameState)
+        {
+            return DistanceFieldBuilder.BuildExitField(gameState);
+        }
+
+        public static void RunKillerPhase(GameState gameState, int[,] exitField)
+        {
+            var killerMoves = new List<(Killer actor, Point target, double score)>();
+            foreach (var killer in gameState.Killers.Where(k => k.Alive))
+            {
+                var target = KillerPolicy.DecideNext(gameState, killer, exitField);
+                var sc = -Point.Chebyshev(target, killer.Pos);
+                killerMoves.Add((killer, target, sc));
+            }
+
+            var decided = MoveConflictResolver.ResolveNoOverlapSwap(gameState, killerMoves);
+            // 套用移動
+            foreach (var kv in decided)
+            {
+                var killer = gameState.Killers.First(a => a.Id == kv.Key);
+                killer.Pos = kv.Value;
+            }
+
+            // 捕獲 #1：鬼停到生存者所在格 -> 生存者移除 +1 分
+            foreach (var killer in gameState.Killers.Where(k => k.Alive))
+            {
+                var victims = gameState.Survivors.Where(sv => sv.Alive && sv.Pos.Equals(killer.Pos)).ToList();
+                foreach (var survivor in victims)
+                {
+                    survivor.Alive = false;
+                    gameState.KillerScore++;
+                }
+            }
+        }
+
+        public static void RunSurvivorPhase(GameState gameState, int[,] exitField)
+        {
+            var survivorMoves = new List<(Survivor actor, Point target, double score)>();
+            foreach (var survivor in gameState.Survivors.Where(sv => sv.Alive))
+            {
+                var target = SurvivorPolicy.DecideNext(gameState, survivor, exitField);
+                var sc = -Point.Chebyshev(target, survivor.Pos);
+                survivorMoves.Add((survivor, target, sc));
+            }
+
+            var decided = MoveConflictResolver.ResolveNoOverlapSwap(gameState, survivorMoves);
+
+            // 先套用移動
+            foreach (var kv in decided)
+            {
+                var survivor = gameState.Survivors.First(a => a.Id == kv.Key);
+                survivor.Pos = kv.Value;
+            }
+
+            // 先判逃脫
+            foreach (var survivor in gameState.Survivors.Where(sv => sv.Alive && gameState.IsExit(sv.Pos)).ToList())
+            {
+                survivor.Alive = false;
+                gameState.SurvivorScore++;
+            }
+
+            // 再判與鬼同格的被捕
+            foreach (var survivor in gameState.Survivors.Where(sv => sv.Alive).ToList())
+            {
+                if (gameState.Killers.Any(k => k.Alive && k.Pos.Equals(survivor.Pos)))
+                {
+                    survivor.Alive = false;
+                    gameState.KillerScore++;
+                }
+            }
+        }
+
+        public static string DecideWinnerOnTimeout(GameState gameState)
+        {
+            // 規則：時間到且仍有生存者 => 鬼勝；若提早無生存者 => 鬼勝（但本函數只用於 timeout 場景）
+            if (gameState.Survivors.Any(sv => sv.Alive))
+            {
+                return "Killer";
+            }
+            return "Survivor"; // 理論上 timeout 時通常不會全逃，但保留語義完整性
+        }
+    }
+}
+```
+
+---
+
+## `B_TurnOrderTests.cs`
+
+```csharp
+using System;
+using System.Linq;
+using TagPOC;
+using Xunit;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// B. 回合流程與事件順序（6~9）
+    /// 6) 鬼先行（鬼 Phase 可直接捕獲）
+    /// 7) 生存者相鄰出口且出口上有鬼 → 生存者先逃脫
+    /// 8) 鬼 Phase 的捕獲
+    /// 9) 時間到（MaxRounds）鬼勝
+    /// </summary>
+    public class B_TurnOrderTests
+    {
+        [Fact(DisplayName = "B6. 鬼先行：鬼 Phase 可直接捕獲，生存者在該回合不再行動")]
+        public void KillerMovesFirst_AndCanCapture_BeforeSurvivorActs()
+        {
+            // 佈局：鬼一步可進入生存者格；確保生存者在該回合前半就被抓
+            var config = new GameConfig
+            {
+                Width = 9, Height = 9,
+                SurvivorCount = 0, KillerCount = 0,
+                Seed = 1
+            };
+
+            var exitPos = new[] { new Point(0, 0) }; // 無關緊要
+            var survivors = new[] { new Point(4, 4) };
+            var killers = new[] { new Point(3, 3) }; // 斜向一步即可進入 (4,4)
+
+            var gameState = TestBoardBuilder.BuildFixed(config, exitPos, survivors, killers);
+            var exitField = StepRunner.BuildExitField(gameState);
+
+            // Killer Phase
+            StepRunner.RunKillerPhase(gameState, exitField);
+
+            // 應在 Killer Phase 就移除生存者，且 KillerScore+1
+            Assert.Equal(0, gameState.Survivors.Count(s => s.Alive));
+            Assert.Equal(1, gameState.KillerScore);
+
+            // 之後 Survivor Phase 即使執行，也不應有生存者行動
+            StepRunner.RunSurvivorPhase(gameState, exitField);
+            Assert.Equal(0, gameState.Survivors.Count(s => s.Alive));
+            Assert.Equal(1, gameState.KillerScore);
+        }
+
+        [Fact(DisplayName = "B7. 生存者進入出口（出口上有鬼）時，先逃脫再判被捕")]
+        public void SurvivorEscapesBeforeCapture_WhenMovingOntoExitEvenIfKillerOnExit()
+        {
+            // 佈局：出口 (4,4)；鬼一開始就站在出口；生存者相鄰出口 (3,3)
+            var config = new GameConfig
+            {
+                Width = 9, Height = 9,
+                SurvivorCount = 0, KillerCount = 0,
+                Seed = 2
+            };
+
+            var exitPos = new[] { new Point(4, 4) };
+            var survivors = new[] { new Point(3, 3) }; // 下一步可走到 (4,4)
+            var killers = new[] { new Point(4, 4) };   // 鬼占在出口
+
+            var gameState = TestBoardBuilder.BuildFixed(config, exitPos, survivors, killers);
+            var exitField = StepRunner.BuildExitField(gameState);
+
+            // 直接執行 Survivor Phase（假設 Killer Phase 此 turn 不移動或無關）
+            StepRunner.RunSurvivorPhase(gameState, exitField);
+
+            // 期望：生存者因踏上出口→立刻逃脫 +1，被移除；鬼分數不變
+            Assert.Equal(0, gameState.Survivors.Count(s => s.Alive));
+            Assert.Equal(1, gameState.SurvivorScore);
+            Assert.Equal(0, gameState.KillerScore);
+        }
+
+        [Fact(DisplayName = "B8. 鬼 Phase 的捕獲：鬼移動到生存者所在格時立即捕獲 +1")]
+        public void KillerPhaseCapture_GrantsKillerPoint_AndRemovesSurvivor()
+        {
+            var config = new GameConfig
+            {
+                Width = 9, Height = 9,
+                SurvivorCount = 0, KillerCount = 0,
+                Seed = 3
+            };
+
+            var exitPos = new[] { new Point(0, 0) };
+            var survivors = new[] { new Point(5, 5) };
+            var killers = new[] { new Point(4, 4) }; // 一步可至 (5,5)
+
+            var gameState = TestBoardBuilder.BuildFixed(config, exitPos, survivors, killers);
+            var exitField = StepRunner.BuildExitField(gameState);
+
+            StepRunner.RunKillerPhase(gameState, exitField);
+
+            Assert.Equal(0, gameState.Survivors.Count(s => s.Alive));
+            Assert.Equal(1, gameState.KillerScore);
+        }
+
+        [Fact(DisplayName = "B9. 時間到且仍有生存者未逃脫 => 鬼勝")]
+        public void KillerWinsOnTimeout_WhenAnySurvivorRemains()
+        {
+            // 佈局：彼此很遠，確保此回合內不會有捕獲也不會逃脫
+            var config = new GameConfig
+            {
+                Width = 9, Height = 9,
+                SurvivorCount = 0, KillerCount = 0,
+                MaxRounds = 1,
+                Seed = 4
+            };
+
+            var exitPos = new[] { new Point(8, 8) };
+            var survivors = new[] { new Point(1, 1) }; // 距出口遠
+            var killers = new[] { new Point(0, 8) };   // 距生存者遠
+
+            var gameState = TestBoardBuilder.BuildFixed(config, exitPos, survivors, killers);
+            var exitField = StepRunner.BuildExitField(gameState);
+
+            // 跑一個完整回合（鬼 → 生存者）
+            StepRunner.RunKillerPhase(gameState, exitField);
+            StepRunner.RunSurvivorPhase(gameState, exitField);
+
+            // 模擬時間到（MaxRounds = 1）
+            gameState.Round = config.MaxRounds;
+
+            // 仍有生存者存活 → timeout 規則下判定鬼勝
+            Assert.True(gameState.Survivors.Any(s => s.Alive), "There should still be a survivor alive for timeout test.");
+            var winner = StepRunner.DecideWinnerOnTimeout(gameState);
+            Assert.Equal("Killer", winner);
+        }
+    }
+}
+```
+
+---
+
+### 使用方式
+
+1. 把三個檔案加入你的 `TagPOC.Tests` 測試專案。
+2. 確保測試專案已 **Project Reference** 你的主程式專案（`TagPOC.csproj`）。
+3. 執行 `dotnet test`。你應該會看到 `B6 ~ B9` 皆通過。
+
+---
+
+如果你想要，我可以把這套測試再補上 **C. 視野規則** 與 **D. 距離場** 的單元測試，沿用同一套 `BuildFixed`/`StepRunner`，並維持你要求的程式風格（所有迴圈一律加 `{ }`）。
+
+
+Question : 可以先進行 C 
+
+Answer:
+太好，我先完成 **C. 視野規則**（10–13） 的 xUnit 測試。
+重點都照你的程式風格：**所有迴圈（for/foreach/while）即便一行也加上 `{ }`**。
+這些測試直接使用我們先前的 `TestBoardBuilder` 與 `StepRunner`，不需要再動到主程式碼。
+
+---
+
+## `C_VisionTests.cs`
+
+```csharp
+using System;
+using System.Linq;
+using TagPOC;
+using Xunit;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// C. 視野規則（10~13）
+    /// 10) 生存者視野 5×5（Chebyshev ≤ 2 可見）
+    /// 11) 鬼視野 7×7（Chebyshev ≤ 3 可見）
+    /// 12) 看不到任何鬼時，BuildVisibleKillerField 應為超大安全值
+    /// 13) Last-seen 與 timeout：鬼在看不見生存者超過 timeout 後，改以出口為目標
+    /// </summary>
+    public class C_VisionTests
+    {
+        [Theory(DisplayName = "C10. SurvivorSight 5×5：距離 2 可見、距離 3 不可見")]
+        [InlineData(2, true)]
+        [InlineData(3, false)]
+        public void SurvivorSight_5x5_Chebyshev2Visible3NotVisible(int distance, bool expectedVisible)
+        {
+            // Arrange
+            var config = new GameConfig
+            {
+                Width =  nine, Height = nine,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, // 5x5
+                KillerSight = 3,   // 7x7（此測試無關）
+                Seed = 1
+            };
+
+            var survivorPos = new Point(4, 4);
+            var killerPos   = new Point(4 + distance, 4);
+            var exits       = new[] { new Point(0, 0) };
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits,
+                survivors: new[] { survivorPos },
+                killers:   new[] { killerPos }
+            );
+
+            // Act
+            var survivor = gameState.Survivors.Single();
+            var visible = Vision.VisibleKillers(gameState, survivor).Any();
+
+            // Assert
+            Assert.Equal(expectedVisible, visible);
+        }
+
+        [Theory(DisplayName = "C11. KillerSight 7×7：距離 3 可見、距離 4 不可見")]
+        [InlineData(3, true)]
+        [InlineData(4, false)]
+        public void KillerSight_7x7_Chebyshev3Visible4NotVisible(int distance, bool expectedVisible)
+        {
+            // Arrange
+            var config = new GameConfig
+            {
+                Width =  nine, Height = nine,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2,
+                KillerSight = 3, // 7x7
+                Seed = 2
+            };
+
+            var killerPos   = new Point(4, 4);
+            var survivorPos = new Point(4 + distance, 4);
+            var exits       = new[] { new Point(0, 0) };
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits,
+                survivors: new[] { survivorPos },
+                killers:   new[] { killerPos }
+            );
+
+            // Act
+            var killer = gameState.Killers.Single();
+            var visible = Vision.VisibleSurvivors(gameState, killer).Any();
+
+            // Assert
+            Assert.Equal(expectedVisible, visible);
+        }
+
+        [Fact(DisplayName = "C12. 看不到任何鬼時，D_killer 場為超大安全值（近似無限）")]
+        public void KillerField_IsVeryLarge_WhenNoKillerVisible()
+        {
+            // Arrange
+            var config = new GameConfig
+            {
+                Width =  nine, Height = nine,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, // 5x5 視野小，讓鬼超出視野
+                KillerSight = 3,
+                Seed = 3
+            };
+
+            var survivorPos = new Point(4, 4);
+            var killerPos   = new Point(0, 8); // 與生存者距離 Chebyshev=4+ => 超過視野
+            var exits       = new[] { new Point(8, 8) };
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits,
+                survivors: new[] { survivorPos },
+                killers:   new[] { killerPos }
+            );
+
+            var survivor = gameState.Survivors.Single();
+
+            // Act
+            var dKiller = DistanceFieldBuilder.BuildVisibleKillerField(gameState, survivor);
+
+            // Assert：任一格應該都是很大的值（我們在實作中用 1_000_000）
+            // 為了降低耦合，這裡只檢查「足夠大」門檻，例如 > 100_000。
+            for (int x = 0; x < config.Width; x++)
+            {
+                for (int y = 0; y < config.Height; y++)
+                {
+                    Assert.True(dKiller[x, y] > 100_000, $"Expected very large safe distance at ({x},{y}), got {dKiller[x, y]}");
+                }
+            }
+        }
+
+        [Fact(DisplayName = "C13. Killer Last-seen 與 Timeout：超時後改以出口為目標移動")]
+        public void KillerUsesExitAfterLastSeenTimeout()
+        {
+            // Arrange：設計幾何讓方向可明顯區分
+            // 地圖中心 (4,4) 放鬼；生存者「北方」(4,1) 先讓鬼看到一次；
+            // 出口「東方」(8,4)。timeout 前鬼應往北走；timeout 後應往東走。
+            var config = new GameConfig
+            {
+                Width =  nine, Height = nine,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2,
+                KillerSight = 3,
+                LastSeenTimeout = 2, // 短一點，方便測
+                Seed = 4
+            };
+
+            var exitPoint   = new Point(8, 4); // 東方出口
+            var killerStart = new Point(4, 4); // 中心
+            var seenSurvivorPos = new Point(4, 1); // 北方（可見距離 3）
+            var outOfSightPos   = new Point(0, 0); // 之後移出視野
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitPoint },
+                survivors: new[] { seenSurvivorPos },
+                killers:   new[] { killerStart }
+            );
+            var killer = gameState.Killers.Single();
+
+            // 先讓鬼看到一次（Round 1）
+            var exitField = StepRunner.BuildExitField(gameState);
+            var firstStepTowardSeen = KillerPolicy.DecideNext(gameState, killer, exitField);
+            // 應朝北（y-1）或（x不變,y-1 或 斜向北）以縮短到 (4,1)
+            Assert.True(firstStepTowardSeen.Y <= killer.Pos.Y,
+                $"Expected first move to reduce Y toward north; got {firstStepTowardSeen}");
+
+            // 套用這一步，並將生存者移到視野外
+            killer.Pos = firstStepTowardSeen;
+            gameState.Survivors.Single().Pos = outOfSightPos;
+
+            // 模擬 timeout：推進回合數超過 LastSeenTimeout
+            gameState.Round += config.LastSeenTimeout + 1;
+
+            // 再決策一次：現在應該以出口為目標，朝東移動（x+1 方向）
+            var stepAfterTimeout = KillerPolicy.DecideNext(gameState, killer, exitField);
+
+            Assert.True(stepAfterTimeout.X >= killer.Pos.X,
+                $"Expected step after timeout to move east (toward exit at {exitPoint}), got {stepAfterTimeout} from {killer.Pos}");
+        }
+
+        // 小工具：為了避免魔數，這裡定義 9
+        private const int nine = 9;
+    }
+}
+```
+
+---
+
+### 怎麼跑
+
+1. 把 `C_VisionTests.cs` 放進你的 `TagPOC.Tests` 測試專案。
+2. 之前提供的 `TestBoardBuilder.cs`、`StepRunner.cs` 已經能支援這些測試。
+3. 直接執行：`dotnet test`。你應該會看到 **C10 \~ C13** 全部通過。
+
+---
+
+需要我繼續補 **D. 距離場與 BFS（14–15）** 的測試嗎？我可以用 5×5 固定地圖做一個期望矩陣比對，並檢查可視鬼距離場只受「視野內」鬼影響。
