@@ -2980,3 +2980,230 @@ namespace TagPOC.Tests
 ---
 
 需要我繼續補 **D. 距離場與 BFS（14–15）** 的測試嗎？我可以用 5×5 固定地圖做一個期望矩陣比對，並檢查可視鬼距離場只受「視野內」鬼影響。
+
+
+Question : 
+開始 D 
+
+Answer : 
+讚，我把 **D. 距離場與 BFS（14–15）** 的 xUnit 測試一次補齊。
+重點同之前要求：**所有迴圈（for/foreach/while）即使只有一行也一律使用 `{ }` 大括號**，命名清晰（`config`、`gameState`、`exitPoint`、`survivor`、`killer`…）。
+
+把下面單一檔案加入你的測試專案 `TagPOC.Tests` 即可執行。
+（此檔依賴我們先前已提供的 `TestBoardBuilder.cs` 與主專案內的 `DistanceFieldBuilder`、`GameState` 等。）
+
+---
+
+## `D_FieldBfsTests.cs`
+
+```csharp
+using System;
+using System.Linq;
+using TagPOC;
+using Xunit;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// D. 距離場與 BFS（14–15）
+    /// 14) 出口距離場正確性（Chebyshev + 多源）
+    /// 15) 可視鬼距離場（僅以「可見鬼」為多源；不可見鬼不影響）
+    /// </summary>
+    public class D_FieldBfsTests
+    {
+        [Fact(DisplayName = "D14. 出口距離場 = 對所有出口 Chebyshev 距離的最小值（多源 BFS）")]
+        public void ExitDistanceField_EqualsMinChebyshevToAllExits()
+        {
+            // Arrange：5x5，小地圖兩個出口（對角）
+            var config = new GameConfig
+            {
+                Width = five, Height = five,
+                SurvivorCount = 0, KillerCount = 0,
+                ExitCount = 0, // 我們用固定佈局自行放置
+                Seed = 1
+            };
+
+            var exitA = new Point(0, 0);
+            var exitB = new Point(4, 4);
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitA, exitB },
+                survivors: Array.Empty<Point>(),
+                killers: Array.Empty<Point>());
+
+            // Act
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            // Assert：每格應為 min( Chebyshev(·,exitA), Chebyshev(·,exitB) )
+            for (int x = 0; x < config.Width; x++)
+            {
+                for (int y = 0; y < config.Height; y++)
+                {
+                    var point = new Point(x, y);
+                    var expected = Math.Min(Point.Chebyshev(point, exitA), Point.Chebyshev(point, exitB));
+                    Assert.Equal(expected, exitField[x, y]);
+                }
+            }
+        }
+
+        [Fact(DisplayName = "D15a. 可視鬼距離場：只有可見鬼為多源；不可見鬼不影響")]
+        public void VisibleKillerField_UsesOnlyVisibleKillers()
+        {
+            // Arrange：生存者在中心 (2,2)，一隻可見鬼在 (4,2)（距離=2 可見），一隻不可見鬼在 (2,5)（距離=3 > 視野2）
+            var config = new GameConfig
+            {
+                Width = five, Height = five,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, // 5x5 視野
+                KillerSight = 3,
+                Seed = 2
+            };
+
+            var survivorPos = new Point(2, 2);
+            var visibleKillerPos = new Point(4, 2);   // Chebyshev=2 ⇒ 可見
+            var invisibleKillerPos = new Point(2, 5); // Chebyshev=3 ⇒ 不可見
+            var exitPoint = new Point(0, 0);
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitPoint },
+                survivors: new[] { survivorPos },
+                killers: new[] { visibleKillerPos, invisibleKillerPos });
+
+            var survivor = gameState.Survivors.Single();
+
+            // Act
+            var killerField = DistanceFieldBuilder.BuildVisibleKillerField(gameState, survivor);
+
+            // Assert：場應只等於「對可見鬼」的 Chebyshev 距離（此例只有一隻可見鬼）
+            for (int x = 0; x < config.Width; x++)
+            {
+                for (int y = 0; y < config.Height; y++)
+                {
+                    var point = new Point(x, y);
+                    var expected = Point.Chebyshev(point, visibleKillerPos);
+                    Assert.Equal(expected, killerField[x, y]);
+                }
+            }
+        }
+
+        [Fact(DisplayName = "D15b. 可視鬼距離場：多隻可見鬼時，取最小距離（多源）")]
+        public void VisibleKillerField_TakesMinimumOverMultipleVisibleKillers()
+        {
+            // Arrange：生存者在中心 (2,2)，兩隻可見鬼在 (4,2) 與 (0,2)（皆距離=2）
+            var config = new GameConfig
+            {
+                Width = five, Height = five,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2,
+                KillerSight = 3,
+                Seed = 3
+            };
+
+            var survivorPos = new Point(2, 2);
+            var visibleKillerA = new Point(4, 2);
+            var visibleKillerB = new Point(0, 2);
+            var exitPoint = new Point(4, 4);
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits: new[] { exitPoint },
+                survivors: new[] { survivorPos },
+                killers: new[] { visibleKillerA, visibleKillerB });
+
+            var survivor = gameState.Survivors.Single();
+
+            // Act
+            var killerField = DistanceFieldBuilder.BuildVisibleKillerField(gameState, survivor);
+
+            // Assert：每格 = min(距離到 A, 距離到 B)
+            for (int x = 0; x < config.Width; x++)
+            {
+                for (int y = 0; y < config.Height; y++)
+                {
+                    var point = new Point(x, y);
+                    var expected = Math.Min(Point.Chebyshev(point, visibleKillerA), Point.Chebyshev(point, visibleKillerB));
+                    Assert.Equal(expected, killerField[x, y]);
+                }
+            }
+        }
+
+        // 小工具：避免魔數
+        private const int five = 5;
+    }
+}
+```
+
+---
+
+### 說明
+
+* **D14**：以 5×5 小地圖、兩個對角出口 `(0,0)` 與 `(4,4)` 測試 `BuildExitField`。斷言每一格皆等於 `min(Chebyshev(·,A), Chebyshev(·,B))`，驗證**多源 BFS**與 **Chebyshev 度量**都正確。
+* **D15a**：放一隻「可見鬼」與一隻「不可見鬼」，檢查 `BuildVisibleKillerField` 只把「可見者」當作 BFS 起點；因此整張場應等於「到可見鬼的 Chebyshev 距離」。
+* **D15b**：放兩隻「都可見」的鬼，驗證距離場等於對兩者距離的**最小值**（多源行為）。
+
+全部測試都遵循你的程式風格習慣（所有迴圈有 `{ }`），並且可直接 `dotnet test` 執行。
+
+---
+
+要不要我接著把 **E. 生存者策略（Scoring & Moves, 16–20）** 也補上？我可以先從「出口相鄰必選、近身強懲避免自殺、一部預測避貼臉」這三個最關鍵案例寫起。
+
+Question : 
+D15a. 測試不通過
+我們現在地圖縮限在 5 x 5 ，如果用 0 開始算初始點的話我們的 invisibleKillerPos 設定值目前會超出範圍 => 會在我們的 GameState 內 InBounds 判斷式出現 outofrange 
+
+Answer : 
+好抓！問題在於 5×5 地圖用 0-based 座標時，生存者放在正中 (2,2) 會讓整張圖到它的 Chebyshev 距離最多只有 2，所以想放一個「不可見（距離≥3）」的鬼就一定越界。解法：把生存者改到 (1,1)，這樣 (4,4) 的距離就是 3（在界內且確實不可見）。
+
+下面是修正後的 **D15a** 測試（其餘不變）。我也維持你要求的風格：所有迴圈都有 `{ }`。
+
+```csharp
+[Fact(DisplayName = "D15a. 可視鬼距離場：只有可見鬼為多源；不可見鬼不影響")]
+public void VisibleKillerField_UsesOnlyVisibleKillers()
+{
+    // Arrange：生存者在 (1,1)
+    // 可見鬼在 (3,1) => Chebyshev=2（可見）
+    // 不可見鬼在 (4,4) => Chebyshev=3（不可見，且在 5x5 界內）
+    var config = new GameConfig
+    {
+        Width = five, Height = five,
+        SurvivorCount = 0, KillerCount = 0,
+        SurvivorSight = 2, // 5x5 視野
+        KillerSight = 3,
+        Seed = 2
+    };
+
+    var survivorPos = new Point(1, 1);
+    var visibleKillerPos = new Point(3, 1);    // 可見
+    var invisibleKillerPos = new Point(4, 4);  // 不可見
+    var exitPoint = new Point(0, 0);
+
+    var gameState = TestBoardBuilder.BuildFixed(
+        config,
+        exits: new[] { exitPoint },
+        survivors: new[] { survivorPos },
+        killers: new[] { visibleKillerPos, invisibleKillerPos });
+
+    var survivor = gameState.Survivors.Single();
+
+    // Act
+    var killerField = DistanceFieldBuilder.BuildVisibleKillerField(gameState, survivor);
+
+    // Assert：距離場應等於「到可見鬼」的 Chebyshev 距離（不可見鬼不影響）
+    for (int x = 0; x < config.Width; x++)
+    {
+        for (int y = 0; y < config.Height; y++)
+        {
+            var point = new Point(x, y);
+            var expected = Point.Chebyshev(point, visibleKillerPos);
+            Assert.Equal(expected, killerField[x, y]);
+        }
+    }
+}
+
+// 小工具：避免魔數
+private const int five = 5;
+```
+
+這樣就能在 5×5 的範圍內，同時滿足「一隻可見、另一隻不可見」的條件而不越界。跑 `dotnet test` 應該就會通過了。需要我把整個 `D_FieldBfsTests.cs` 幫你一併更新好嗎？
+
