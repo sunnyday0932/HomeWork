@@ -119,7 +119,12 @@ public static class SimulatorExtensions
 
             if (!state.Survivors.Any(sv => sv.Alive))
             {
-                return ("Killer", state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
+                var winner =
+                    (state.SurvivorScore >= state.Config.SurvivorCount)
+                        ? "Survivor"      // 全員逃脫
+                        : "Killer";       // 被抓光或其它情形
+
+                return (winner, state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
             }
         }
 

@@ -5218,3 +5218,53 @@ Answer :
 這個 JSON 已經壓成單行，AI 可以輕易解析，未來在其他對話中我能透過它恢復完整的脈絡。
 
 要我直接幫你把這個 JSON 存到我的「持久記憶」（bio）裡嗎？這樣之後你不用再貼，我就能記得整個 POC 設計與討論。
+
+Question : 
+我們最後模擬的程式似乎有點問題，沒有印出生存者獲勝的方式?
+
+Answer : 
+你抓得超準！目前的模擬「幾乎永遠回傳 Killer 勝」不是因為隨機性，而是**規則 + 程式邏輯**造成的：
+
+* 你的規則本來就寫：
+
+  * **時間到**（第 100 回合結束）→ 鬼勝。
+  * **場上沒有生存者** → 鬼勝。
+* 但「生存者全部成功逃脫」其實是\*\*另一種“場上沒有生存者”\*\*的情況。現在的 `RunOneWithEvents` 在生存者 Phase 把人移除後，只要發現「場上沒有生存者」，就直接 `return ("Killer", ...)`，等於把「全員逃脫」也錯判成鬼勝。
+
+## 最小修正方案（只改 1 個判斷）
+
+在 **生存者 Phase** 處理完 `Escape` 之後，檢查「是否全員逃脫」。如果是，就回傳 **"Survivor"**；否則維持原本的判斷。
+
+把你先前我給的 `SimulatorExtensions.RunOneWithEvents` 中「生存者 Phase」尾段那個 `if (!state.Survivors.Any(...))` 改成下面這段即可：
+
+```csharp
+// 生存者 Phase 結尾（處理完 逃脫 與 生踩鬼捕獲 後）
+state.Log.RoundFooter(state);
+
+// ✅ 修正點：區分「全員逃脫」 vs 「被抓光 / 其它」。
+if (!state.Survivors.Any(sv => sv.Alive))
+{
+    var winner =
+        (state.SurvivorScore >= state.Config.SurvivorCount)
+        ? "Survivor"      // 全員逃脫
+        : "Killer";       // 被抓光或其它情形
+
+    return (winner, state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
+}
+```
+
+> 其餘邏輯維持不變：
+>
+> * 鬼 Phase 結束後若已無生存者（一定是被捕）→ 鬼勝。
+> * **時間到**（第 100 回合結束）→ 仍是鬼勝（符合你原本規則：「到 100 回合還有生存者未逃脫」→ 鬼勝）。
+
+## 需要改動其它地方嗎？
+
+* `RunAndSaveBatch(...)`：不用改。它是看 `winner == "Killer"` 計數；現在如果全員逃脫就會收到 `"Survivor"`，統計自然會反映生存者勝。
+* 事件紀錄（NDJSON / CSV / aggregate）格式都不需改，會自動開始出現 `"winner,Survivor"` 的場次。
+
+## 快速驗證（建議）
+
+用小圖（例如 `30x30`）、`SurvivorCount=3`、`KillerCount=2` 跑個 50 場，看看 `summary.csv` 是否開始出現 `Survivor`；再把地圖放大到你要的 `100x100` 跑 300 場，檢查 `aggregate.json` 的 `which_side_higher` 與 `killer_win_rate`。
+
+如果你希望「不是**全員**都逃脫也能算生存者勝」（例如**至少一人**成功逃脫就判生存者勝），我可以再給你一個極小改動版本，把上面判斷放寬為 `state.SurvivorScore >= 1 && !state.Survivors.Any(...)` 或者直接在任何回合檢查 `state.SurvivorScore == state.Config.SurvivorCount` 就立即提早結束遊戲。

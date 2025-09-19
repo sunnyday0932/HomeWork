@@ -14,11 +14,11 @@ public class SimulatorTest
             Height = 100,
             MaxRounds = 100,
             SurvivorCount = 3,
-            KillerCount = 2,
+            KillerCount = 1,
             SurvivorSight = 2, // 5x5
             KillerSight = 3,   // 7x7
-            ExitCount = 2,
-            Seed = 42,
+            ExitCount = 3,
+            Seed = 102,
             VerboseLog = false,
             PrintAsciiMapEachRound = false
         };
