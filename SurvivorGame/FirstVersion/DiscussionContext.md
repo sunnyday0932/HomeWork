@@ -4371,3 +4371,292 @@ namespace TagPOC.Tests
 ---
 
 如果這批都通過，我可以再補 **I. 統計穩健性（32–33）** 的煙霧測試（小批量 Monte Carlo），或你也可以指定下一個區塊要先完成哪一組 👍
+
+Question : 可以開始 I
+
+Answer : 
+太好了～我把 **I. 統計穩健性（32–33）** 的 xUnit「煙霧測試」寫成一個檔案。
+特色：
+
+* 所有 `for/foreach/while` 一律加上 `{ }`。
+* 以**小批量蒙地卡羅**（可調整集數，預設 150）驗證「勝率穩定性」與「單一旋鈕的單調性」。
+* 測試時不依賴 `MiniMonteCarlo.RunBatch`（它只列印），而是在測試內建一個 `RunBatchForStats(...)` 回傳統計值。
+
+> 提醒：這類測試屬「煙霧/趨勢」檢查，避免過度嚴苛。為降低隨機抖動，選用 150 場與寬鬆閾值；若你想更嚴格，可將 `episodes` 提高與容忍度調小。
+
+---
+
+## `I_MonteCarloSmokeTests.cs`
+
+```csharp
+using System;
+using System.Linq;
+using TagPOC;
+using Xunit;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// I. 統計穩健性（32–33）
+    /// 32) 相同參數下，多批次勝率差不應過大（穩定性）
+    /// 33) 單一旋鈕單調性：SurvivorSight 2 → 3 不應讓鬼勝率上升，且不應讓生存者平均得分下降
+    /// </summary>
+    public class I_MonteCarloSmokeTests
+    {
+        private readonly record struct BatchStats(double KillerWinRate, double AvgSurvivorPoints, double AvgKillerPoints, double AvgRounds);
+
+        private static BatchStats RunBatchForStats(GameConfig baseConfig, int episodes, int seedOffset)
+        {
+            int killerWins = 0;
+            int totalSurvivorPoints = 0;
+            int totalKillerPoints = 0;
+            int totalRounds = 0;
+
+            for (int i = 0; i < episodes; i++)
+            {
+                var config = baseConfig with
+                {
+                    Seed = baseConfig.Seed + seedOffset + i,
+                    VerboseLog = false,
+                    PrintAsciiMapEachRound = false
+                };
+
+                var (winner, survivorScore, killerScore, rounds) = Simulator.RunOne(config);
+
+                if (winner == "Killer")
+                {
+                    killerWins++;
+                }
+
+                totalSurvivorPoints += survivorScore;
+                totalKillerPoints += killerScore;
+                totalRounds += rounds;
+            }
+
+            double winRate = (double)killerWins / episodes;
+            double avgS = (double)totalSurvivorPoints / episodes;
+            double avgK = (double)totalKillerPoints / episodes;
+            double avgR = (double)totalRounds / episodes;
+
+            return new BatchStats(winRate, avgS, avgK, avgR);
+        }
+
+        [Fact(DisplayName = "I32. 穩定性：同參數下不同隨機種子，鬼勝率差異不應過大")]
+        public void Stability_KillerWinRate_ShouldNotVaryTooMuchAcrossBatches()
+        {
+            // 基準配置：50x50、3v3、視野 5x5 / 7x7、回合 100（與主程式預設一致）
+            var baseConfig = new GameConfig
+            {
+                Width = 50,
+                Height = 50,
+                MaxRounds = 100,
+                SurvivorCount = 3,
+                KillerCount = 3,
+                SurvivorSight = 2,
+                KillerSight = 3,
+                ExitCount = 2,
+                Seed = 1000
+            };
+
+            int episodes = 150;           // 小批量即可觀察趨勢
+            double allowedDiff = 0.20;    // 允許批次間最大 20% 的波動
+
+            var batchA = RunBatchForStats(baseConfig, episodes, seedOffset: 0);
+            var batchB = RunBatchForStats(baseConfig, episodes, seedOffset: 10_000);
+
+            // 鬼勝率不應差太多（避免回歸造成極端不穩定）
+            double diff = Math.Abs(batchA.KillerWinRate - batchB.KillerWinRate);
+            Assert.True(diff <= allowedDiff, $"Win rate drift too large: Δ={diff:0.000} (> {allowedDiff:0.00})");
+
+            // 一些基本健全檢查
+            Assert.InRange(batchA.AvgRounds, 1, baseConfig.MaxRounds);
+            Assert.InRange(batchB.AvgRounds, 1, baseConfig.MaxRounds);
+            Assert.True(batchA.AvgSurvivorPoints >= 0 && batchB.AvgSurvivorPoints >= 0, "Avg survivor points should be non-negative.");
+            Assert.True(batchA.AvgKillerPoints >= 0 && batchB.AvgKillerPoints >= 0, "Avg killer points should be non-negative.");
+        }
+
+        [Fact(DisplayName = "I33. 單調性：SurvivorSight ↑ 時，鬼勝率不應上升；生存者平均分不應下降")]
+        public void Monotonicity_SurvivorSight_Increase_ShouldNotHelpKillers()
+        {
+            var baseConfigLowSight = new GameConfig
+            {
+                Width = 50,
+                Height = 50,
+                MaxRounds = 100,
+                SurvivorCount = 3,
+                KillerCount = 3,
+                SurvivorSight = 2, // 5x5
+                KillerSight = 3,   // 7x7
+                ExitCount = 2,
+                Seed = 2000
+            };
+
+            var baseConfigHighSight = baseConfigLowSight with { SurvivorSight = 3 }; // 7x7 視野給生存者
+
+            int episodes = 150;
+            double epsilon = 0.05; // 允許小幅隨機抖動
+
+            var low = RunBatchForStats(baseConfigLowSight, episodes, seedOffset: 0);
+            var high = RunBatchForStats(baseConfigHighSight, episodes, seedOffset: 10_000);
+
+            // 生存者視野變大，不應讓「鬼勝率」上升
+            Assert.True(high.KillerWinRate <= low.KillerWinRate + epsilon,
+                $"Killer win rate increased unexpectedly when SurvivorSight increased: low={low.KillerWinRate:0.000}, high={high.KillerWinRate:0.000}, eps={epsilon:0.00}");
+
+            // 也不應讓生存者平均得分下降
+            Assert.True(high.AvgSurvivorPoints + epsilon >= low.AvgSurvivorPoints,
+                $"Avg survivor points dropped unexpectedly when SurvivorSight increased: low={low.AvgSurvivorPoints:0.000}, high={high.AvgSurvivorPoints:0.000}, eps={epsilon:0.00}");
+        }
+    }
+}
+```
+
+---
+
+### 小結
+
+* **I32**：以兩個不同的隨機區間跑各 150 場，比較鬼勝率差異是否 ≤ 20%。同時做基本健全檢查（平均回合數落在 1～MaxRounds、平均分數非負）。
+* **I33**：將 `SurvivorSight` 從 2 提升到 3，跑各 150 場；檢查鬼勝率**不增加**、生存者平均分**不降低**（容忍抖動 `ε=0.05`）。
+
+如果你希望把這些測試跑得更穩，可以把 `episodes` 提高到 300～500；或把 `epsilon/allowedDiff` 再調小。
+要不要我接著補 **J. Logging 與可診斷性（34–35）**？
+
+Question : 
+先處理第一個語法的問題 C# 沒有 with 的寫法
+例如 : 
+var baseConfigHighSight = baseConfigLowSight with { SurvivorSight = 3 }; 
+這是不可以執行的
+
+需要創建這個物件後初始化給設定，請幫我調整
+
+Answer : 
+啊對，你的 `GameConfig` 在我們的專案裡是 **class** 不是 `record`，所以 C# 沒有 `with` 表達式可用。
+要做「複製後改某些屬性」只能用 **new + 指定屬性**。
+
+我幫你把 `I33` 測試改掉 `with` 的語法，使用正統的物件初始化：
+
+---
+
+### 修正版片段（I33 測試內）
+
+```csharp
+[Fact(DisplayName = "I33. 單調性：SurvivorSight ↑ 時，鬼勝率不應上升；生存者平均分不應下降")]
+public void Monotonicity_SurvivorSight_Increase_ShouldNotHelpKillers()
+{
+    var baseConfigLowSight = new GameConfig
+    {
+        Width = 50,
+        Height = 50,
+        MaxRounds = 100,
+        SurvivorCount = 3,
+        KillerCount = 3,
+        SurvivorSight = 2, // 5x5
+        KillerSight = 3,   // 7x7
+        ExitCount = 2,
+        Seed = 2000
+    };
+
+    // 原本 with 改為 new 初始化
+    var baseConfigHighSight = new GameConfig
+    {
+        Width = baseConfigLowSight.Width,
+        Height = baseConfigLowSight.Height,
+        MaxRounds = baseConfigLowSight.MaxRounds,
+        SurvivorCount = baseConfigLowSight.SurvivorCount,
+        KillerCount = baseConfigLowSight.KillerCount,
+        SurvivorSight = 3, // 7x7 視野給生存者
+        KillerSight = baseConfigLowSight.KillerSight,
+        ExitCount = baseConfigLowSight.ExitCount,
+        Seed = baseConfigLowSight.Seed
+    };
+
+    int episodes = 150;
+    double epsilon = 0.05; // 允許小幅隨機抖動
+
+    var low = RunBatchForStats(baseConfigLowSight, episodes, seedOffset: 0);
+    var high = RunBatchForStats(baseConfigHighSight, episodes, seedOffset: 10_000);
+
+    // 生存者視野變大，不應讓「鬼勝率」上升
+    Assert.True(high.KillerWinRate <= low.KillerWinRate + epsilon,
+        $"Killer win rate increased unexpectedly when SurvivorSight increased: low={low.KillerWinRate:0.000}, high={high.KillerWinRate:0.000}, eps={epsilon:0.00}");
+
+    // 也不應讓生存者平均得分下降
+    Assert.True(high.AvgSurvivorPoints + epsilon >= low.AvgSurvivorPoints,
+        $"Avg survivor points dropped unexpectedly when SurvivorSight increased: low={low.AvgSurvivorPoints:0.000}, high={high.AvgSurvivorPoints:0.000}, eps={epsilon:0.00}");
+}
+```
+
+---
+
+這樣就能正常編譯。
+你要不要我幫你寫一個 `Clone()` 方法（或 `CopyFrom(...)`）在 `GameConfig` 裡？這樣以後就不用一個個手動複製，測試會更乾淨。
+
+
+Question : 
+RunBatchForStats 這一個裡面也有 with 的寫法請修正
+
+Answer : 
+👌 抓到了！`RunBatchForStats` 裡我用了一個 `with` 來複製 `GameConfig`，但它是 class，不能這樣用。
+我們只需要建立一個新的 `GameConfig`，把屬性一一複製過來，再覆寫要調整的值。
+
+---
+
+### 修正版 `RunBatchForStats`
+
+```csharp
+private static BatchStats RunBatchForStats(GameConfig baseConfig, int episodes, int seedOffset)
+{
+    int killerWins = 0;
+    int totalSurvivorPoints = 0;
+    int totalKillerPoints = 0;
+    int totalRounds = 0;
+
+    for (int i = 0; i < episodes; i++)
+    {
+        var config = new GameConfig
+        {
+            Width = baseConfig.Width,
+            Height = baseConfig.Height,
+            MaxRounds = baseConfig.MaxRounds,
+            SurvivorCount = baseConfig.SurvivorCount,
+            KillerCount = baseConfig.KillerCount,
+            SurvivorSight = baseConfig.SurvivorSight,
+            KillerSight = baseConfig.KillerSight,
+            ExitCount = baseConfig.ExitCount,
+            Seed = baseConfig.Seed + seedOffset + i,
+            VerboseLog = false,
+            PrintAsciiMapEachRound = false
+        };
+
+        var (winner, survivorScore, killerScore, rounds) = Simulator.RunOne(config);
+
+        if (winner == "Killer")
+        {
+            killerWins++;
+        }
+
+        totalSurvivorPoints += survivorScore;
+        totalKillerPoints += killerScore;
+        totalRounds += rounds;
+    }
+
+    double winRate = (double)killerWins / episodes;
+    double avgS = (double)totalSurvivorPoints / episodes;
+    double avgK = (double)totalKillerPoints / episodes;
+    double avgR = (double)totalRounds / episodes;
+
+    return new BatchStats(winRate, avgS, avgK, avgR);
+}
+```
+
+---
+
+這樣就完全移除了 `with`，跑測試就不會再遇到編譯錯誤。
+
+要不要我幫你在 `GameConfig` 裡加一個 `CloneWith(Action<GameConfig> mutate)` 小工具？這樣測試就能寫成：
+
+```csharp
+var highSight = baseConfigLowSight.CloneWith(cfg => cfg.SurvivorSight = 3);
+```
+
+比手動複製所有欄位乾淨很多。

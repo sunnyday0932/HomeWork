@@ -12,7 +12,7 @@ namespace SurvivorGame.Tests;
 /// </summary>
 public class KillerPolicyTest
 {
-    [Fact(DisplayName = "F21. 視野內有多名生存者時，鎖定最近者並朝其方向縮短距離")]
+    [Fact(DisplayName = "視野內有多名生存者時，鎖定最近者並朝其方向縮短距離")]
     public void VisibleTargets_SelectsNearestSurvivor()
     {
         // 幾何：Killer=(4,4)，兩名生存者在可見範圍內：
@@ -53,7 +53,7 @@ public class KillerPolicyTest
         Assert.True(newDistToFar >= prevDistToFar - 1);
     }
 
-    [Fact(DisplayName = "F22. 看不見時，使用 last-seen 位置作為追擊目標")]
+    [Fact(DisplayName = "看不見時，使用 last-seen 位置作為追擊目標")]
     public void UsesLastSeenPosition_WhenSurvivorOutOfSight()
     {
         // 幾何：Killer=(4,4)，先在 Round t 看見生存者 at (6,4)；
@@ -101,7 +101,7 @@ public class KillerPolicyTest
         Assert.True(second.X >= killer.Pos.X, "Should keep moving toward last-seen (increase X toward 6).");
     }
 
-    [Fact(DisplayName = "F23. 超過 last-seen timeout 後，改朝最近出口前進")]
+    [Fact(DisplayName = "超過 last-seen timeout 後，改朝最近出口前進")]
     public void PatrolsExit_AfterLastSeenTimeout()
     {
         // 幾何：Killer=(4,4)，最近出口在 (10,4)（東方）。超過 timeout 後應朝出口方向移動（x 增加）。
@@ -141,7 +141,7 @@ public class KillerPolicyTest
         Assert.Equal(prev - 1, now);
     }
 
-    [Fact(DisplayName = "F24. Spacing penalty：等距縮短目標時，偏好不緊鄰其他鬼的候選步")]
+    [Fact(DisplayName = "Spacing penalty：等距縮短目標時，偏好不緊鄰其他鬼的候選步")]
     public void SpacingPenalty_PrefersNonAdjacentCandidate_WhenDistanceGainIsEqual()
     {
         // 幾何：
