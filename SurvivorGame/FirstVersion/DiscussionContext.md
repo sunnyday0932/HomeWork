@@ -3694,3 +3694,299 @@ public void LastSeenShadow_DiscouragesStepsInsideShadowRadius()
 ---
 
 如果還想再強化穩健度，我可以把這兩個案例的 `Alpha_Exit/Beta_Safety/Gamma/Omega` 參數在測試前暫時「鎖定」為最小影響組合（我們已把 `Omega_Margin=0`，其餘維持預設也能通過），以降低未來你微調權重造成測試脆弱的機率。需要的話我也可以順手加上。
+
+
+Question : 
+可以不用，前面幾個測試案例設置的參數已經足夠驗證以及不會有誤測的情況發生了
+
+繼續下一個 F
+
+Answer : 
+好，這一輪我把 **F. 鬼策略（21–24）** 的 xUnit 測試一次補齊，沿用你要求的程式風格（所有 `for/foreach/while` 一律使用 `{ }`），並且維持清楚的變數命名。直接把下面檔案加入 `TagPOC.Tests` 專案即可執行（依賴先前的 `TestBoardBuilder.cs` 與主專案的 `KillerPolicy`、`Vision` 等）。
+
+---
+
+## `F_KillerPolicyTests.cs`
+
+```csharp
+using System;
+using System.Linq;
+using TagPOC;
+using Xunit;
+
+namespace TagPOC.Tests
+{
+    /// <summary>
+    /// F. 鬼策略（21–24）
+    /// 21) 視野內選最近生存者
+    /// 22) 視野外時使用 last-seen 位置追擊
+    /// 23) 超過 timeout 後改巡邏出口（朝最近出口前進）
+    /// 24) spacing penalty 促使選擇不緊鄰其他鬼的候選步（在等距縮短目標時）
+    /// </summary>
+    public class F_KillerPolicyTests
+    {
+        [Fact(DisplayName = "F21. 視野內有多名生存者時，鎖定最近者並朝其方向縮短距離")]
+        public void VisibleTargets_SelectsNearestSurvivor()
+        {
+            // 幾何：Killer=(4,4)，兩名生存者在可見範圍內：
+            // Snear=(6,4) 距離=2；Sfar=(8,8) 距離=4。預期鬼的下一步會縮短到 Snear 的距離。
+            var config = new GameConfig
+            {
+                Width = 15, Height = 15,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3, // 7x7 視野
+                Seed = 210
+            };
+
+            var exitPoint   = new Point(0, 0);  // 無關
+            var killerStart = new Point(4, 4);
+            var sNear       = new Point(6, 4);  // dist=2
+            var sFar        = new Point(8, 8);  // dist=4
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits:     new[] { exitPoint },
+                survivors: new[] { sNear, sFar },
+                killers:   new[] { killerStart }
+            );
+
+            var killer    = gameState.Killers.Single();
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            var prevDistToNear = Point.Chebyshev(killer.Pos, sNear);
+            var prevDistToFar  = Point.Chebyshev(killer.Pos, sFar);
+
+            var next = KillerPolicy.DecideNext(gameState, killer, exitField);
+
+            var newDistToNear = Point.Chebyshev(next, sNear);
+            var newDistToFar  = Point.Chebyshev(next, sFar);
+
+            // 斷言：對最近者距離必須縮短 1；不會為了遠者而放棄縮短最近者
+            Assert.Equal(prevDistToNear - 1, newDistToNear);
+            Assert.True(newDistToFar >= prevDistToFar - 1);
+        }
+
+        [Fact(DisplayName = "F22. 看不見時，使用 last-seen 位置作為追擊目標")]
+        public void UsesLastSeenPosition_WhenSurvivorOutOfSight()
+        {
+            // 幾何：Killer=(4,4)，先在 Round t 看見生存者 at (6,4)；
+            // 下一回合生存者移至視野外，但在 timeout 內 ⇒ 應朝 last-seen (6,4) 前進（x 增加）。
+            var config = new GameConfig
+            {
+                Width = 15, Height = 15,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3,
+                LastSeenTimeout = 5,
+                Seed = 220
+            };
+
+            var exitPoint        = new Point(0, 0);
+            var killerStart      = new Point(4, 4);
+            var survivorSeen     = new Point(6, 4);  // 可見
+            var survivorOutOfFov = new Point(12, 12); // 與 killer 距離 > 3，移至視野外
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits:     new[] { exitPoint },
+                survivors: new[] { survivorSeen },
+                killers:   new[] { killerStart }
+            );
+
+            var killer    = gameState.Killers.Single();
+            var survivor  = gameState.Survivors.Single();
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            // 第一次決策（看見）
+            var first = KillerPolicy.DecideNext(gameState, killer, exitField);
+            Assert.True(first.X >= killer.Pos.X, "When target is at (6,4), the first step should not move left.");
+
+            // 套用一步並更新 last-seen（視為 Round t）
+            killer.Pos = first;
+            killer.LastSeenSurvivorPos = survivorSeen;
+            killer.LastSeenSurvivorRound = gameState.Round;
+
+            // 生存者移到視野外，回合+1（仍在 timeout 內）
+            gameState.Round += 1;
+            survivor.Pos = survivorOutOfFov;
+
+            var second = KillerPolicy.DecideNext(gameState, killer, exitField);
+            // 仍應朝 last-seen (6,4) 前進（東向或東北/東南）
+            Assert.True(second.X >= killer.Pos.X, "Should keep moving toward last-seen (increase X toward 6).");
+        }
+
+        [Fact(DisplayName = "F23. 超過 last-seen timeout 後，改朝最近出口前進")]
+        public void PatrolsExit_AfterLastSeenTimeout()
+        {
+            // 幾何：Killer=(4,4)，最近出口在 (10,4)（東方）。超過 timeout 後應朝出口方向移動（x 增加）。
+            var config = new GameConfig
+            {
+                Width = 15, Height = 15,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3,
+                LastSeenTimeout = 2,
+                Seed = 230
+            };
+
+            var exitPoint   = new Point(10, 4);
+            var killerStart = new Point(4, 4);
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits:     new[] { exitPoint },
+                survivors: Array.Empty<Point>(),
+                killers:   new[] { killerStart }
+            );
+
+            var killer    = gameState.Killers.Single();
+            var exitField = DistanceFieldBuilder.BuildExitField(gameState);
+
+            // 模擬：曾看過生存者，但已經超時
+            killer.LastSeenSurvivorPos = new Point(6, 6);
+            killer.LastSeenSurvivorRound = 1;
+            gameState.Round = killer.LastSeenSurvivorRound + config.LastSeenTimeout + 1;
+
+            var step = KillerPolicy.DecideNext(gameState, killer, exitField);
+
+            // 應朝最近出口 (10,4) 前進：x 不應減少，且到出口距離應縮小
+            Assert.True(step.X >= killer.Pos.X, "Should move east toward the nearest exit.");
+            var prev = Point.Chebyshev(killer.Pos, exitPoint);
+            var now  = Point.Chebyshev(step, exitPoint);
+            Assert.Equal(prev - 1, now);
+        }
+
+        [Fact(DisplayName = "F24. Spacing penalty：等距縮短目標時，偏好不緊鄰其他鬼的候選步")]
+        public void SpacingPenalty_PrefersNonAdjacentCandidate_WhenDistanceGainIsEqual()
+        {
+            // 幾何：
+            // - 目標生存者 T=(5,3)
+            // - Killer A at (2,2) 有兩個「等價縮短」候選：
+            //     A1=(3,2) 與 A2=(3,3) 到 T 距離同為 2（皆從 3 縮到 2）
+            // - 另一隻 Killer B at (2,4)
+            //   * A1=(3,2) 與 B 距離 = max(|3-2|,|2-4|)=2（不觸發 spacing penalty）
+            //   * A2=(3,3) 與 B 距離 = max(1,1)=1（觸發 spacing penalty）
+            // 預期：Killer A 應選 A1=(3,2) 而不是 A2=(3,3)。
+            var config = new GameConfig
+            {
+                Width = 9, Height = 9,
+                SurvivorCount = 0, KillerCount = 0,
+                SurvivorSight = 2, KillerSight = 3,
+                KillerSpacingPenalty = 1.0, // 放大影響，確保傾向明顯
+                KillerInterceptBonus = 0.0, // 關掉額外干擾
+                Seed = 240
+            };
+
+            var exitPoint = new Point(0, 0); // 無關
+            var target    = new Point(5, 3);
+            var killerA   = new Point(2, 2);
+            var killerB   = new Point(2, 4);
+
+            var gameState = TestBoardBuilder.BuildFixed(
+                config,
+                exits:     new[] { exitPoint },
+                survivors: new[] { target },
+                killers:   new[] { killerA, killerB }
+            );
+
+            var killerARef = gameState.Killers.First(k => k.Id == 0);
+            var exitField  = DistanceFieldBuilder.BuildExitField(gameState);
+
+            var next = KillerPolicy.DecideNext(gameState, killerARef, exitField);
+
+            Assert.Equal(new Point(3, 2), next);   // 偏好不緊鄰 B 的候選
+            Assert.NotEqual(new Point(3, 3), next); // 避免緊鄰 B 的候選
+        }
+    }
+}
+```
+
+---
+
+### 設計重點說明
+
+* **F21**：兩名可見生存者、距離不同。檢查下一步對最近者距離必然縮短 1（Chebyshev）。
+* **F22**：先「看見」一次，記錄 last-seen；之後把生存者移出視野但仍在 timeout 內，檢查下一步仍朝 last-seen 的方向。
+* **F23**：超過 `LastSeenTimeout` 後，檢查下一步會朝最近出口縮短距離。
+* **F24**：構造「兩個等距縮短目標」的候選，只有一個會觸發 spacing penalty，驗證 `KillerPolicy` 會選擇不緊鄰同伴的那個。
+
+如果這些測試跑起來都 OK，我可以繼續補 **G. 衝突解算（25–28）**；或你想先回頭把某些主程式策略（例如鬼的攔截得分）再做一點可測性的重構，我也可以配合調整測試。
+
+
+Question : 
+有一個問題在 SpacingPenalty_PrefersNonAdjacentCandidate_WhenDistanceGainIsEqual 驗測不通過 ，next 結果是 3,1 ，這邊有個疑惑確實應該要選擇比較靠近逃脫者，又不跟 killerb 緊鄰的候選，為甚麼會是這樣?
+
+Answer : 
+好問題！這個失敗是**情境設計** + **tie-break 行為**造成的，不是演算法壞掉。
+
+## 為什麼會走到 (3,1)？
+
+在原本的幾何下：
+
+* 目標生存者 `T=(5,3)`
+* 鬼 A 起點 `(2,2)`，另一隻鬼 B 在 `(2,4)`
+* A 的鄰居中有 **三個**會把到 T 的 Chebyshev 距離從 3 縮到 2：
+
+  * `(3,2)`, `(3,3)`, **`(3,1)`**
+* 我們關掉了 `KillerInterceptBonus`，而 `spacing` 對 `(3,2)` 與 `(3,1)` 都**不觸發**（對 B 的距離分別是 2 與 3），所以三者的分數其實**一樣**。
+* `KillerPolicy.DecideNext` 在分數相等時會選到**第一個**掃到的候選（鄰居順序是 `(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)`），因此 `(3,1)` 先被看到就被選中。
+
+> 結論：不是 spacing 無效，而是 **第三個同分候選 (3,1)** 讓 tie-break 落在它身上。
+
+---
+
+## 修正測試的方法（建議）
+
+把目標改成 `T=(5,4)`，就能排除 `(3,1)` 這個同分候選，只留下我們想比較的兩個：
+
+* 從 `(2,2)` 到 `(5,4)` 的距離是 3；能縮短到 2 的只有 `(3,2)` 與 `(3,3)`。
+* `(3,3)` 會**緊鄰** B `(2,4)`（距離 1）→ 觸發 spacing 懲罰；
+  `(3,2)` 與 B 距離 2 → **不觸發**。
+* 關掉 `KillerInterceptBonus`，即可保證 spacing 是唯一差異 → 應選 `(3,2)`。
+
+### 更新後的測試（只改這個案例）
+
+```csharp
+[Fact(DisplayName = "F24. Spacing penalty：等距縮短目標時，偏好不緊鄰其他鬼的候選步")]
+public void SpacingPenalty_PrefersNonAdjacentCandidate_WhenDistanceGainIsEqual()
+{
+    var config = new GameConfig
+    {
+        Width = 9, Height = 9,
+        SurvivorCount = 0, KillerCount = 0,
+        SurvivorSight = 2, KillerSight = 3,
+        KillerSpacingPenalty = 1.0, // 放大影響，確保傾向明顯
+        KillerInterceptBonus = 0.0, // 關掉額外干擾
+        Seed = 240
+    };
+
+    var exitPoint = new Point(0, 0); // 無關
+    var target    = new Point(5, 4); // ← 改成 5,4，排除 (3,1) 的同分候選
+    var killerA   = new Point(2, 2);
+    var killerB   = new Point(2, 4);
+
+    var gameState = TestBoardBuilder.BuildFixed(
+        config,
+        exits:     new[] { exitPoint },
+        survivors: new[] { target },
+        killers:   new[] { killerA, killerB }
+    );
+
+    var killerARef = gameState.Killers.First(k => k.Id == 0);
+    var exitField  = DistanceFieldBuilder.BuildExitField(gameState);
+
+    var next = KillerPolicy.DecideNext(gameState, killerARef, exitField);
+
+    Assert.Equal(new Point(3, 2), next);    // 偏好不緊鄰 B 的候選
+    Assert.NotEqual(new Point(3, 3), next); // 會觸發 spacing 懲罰的候選
+}
+```
+
+---
+
+## 其他可選修法（不一定要改）
+
+如果你想保留原幾何（T=5,3），也可以：
+
+* **把 B 放在 (3,1)**：讓 `(3,1)` 直接吃到 spacing 懲罰（甚至同格會被解算擋住）；或
+* **在策略中加入明確的 tie-break**（例如分數相等時，優先 `dx>0`、再 `dy`、或依方位排序），讓測試可預期。
+
+但就測試穩健度而言，**調幾何使唯一差異來自 spacing**是最乾淨的做法。
