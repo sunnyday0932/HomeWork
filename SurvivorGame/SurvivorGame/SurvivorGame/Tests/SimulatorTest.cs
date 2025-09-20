@@ -27,7 +27,7 @@ public class SimulatorTest
         SimulatorExtensions.RunAndSaveBatch(config, episodes: episodes, outputDir: $"../../../../docs/Episode{episodes}_Killer{config.KillerCount}_Survivor_{config.SurvivorCount}_Seed_{config.Seed}_Result");
     }
     
-    [Fact (DisplayName = "多執行緒模擬")]
+    [Fact (DisplayName = "多執行緒模擬",Skip = "需要的時候自行打開")]
     public void SimulatorMultiThread()
     {
         var config = new GameConfig
@@ -40,7 +40,7 @@ public class SimulatorTest
             SurvivorSight = 2, // 5x5
             KillerSight = 3,   // 7x7
             ExitCount = 2,
-            Seed = 942,
+            Seed = 91023,
             VerboseLog = false,
             PrintAsciiMapEachRound = false
         };

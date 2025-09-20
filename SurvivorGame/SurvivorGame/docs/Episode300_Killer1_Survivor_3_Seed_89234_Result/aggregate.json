@@ -1,0 +1,8 @@
+{
+  "episodes": 300,
+  "killer_win_rate": 0.573,
+  "avg_survivor_points": 2.243,
+  "avg_killer_points": 0.210,
+  "avg_rounds": 85.2,
+  "which_side_higher": "Killer"
+}
