@@ -59,7 +59,7 @@ public class MonteCarloSmokeTest
         return new BatchStats(winRate, avgS, avgK, avgR);
     }
 
-    [Fact(DisplayName = "穩定性：同參數下不同隨機種子，鬼勝率差異不應過大")]
+    [Fact(DisplayName = "穩定性：同參數下不同隨機種子，鬼勝率差異不應過大", Skip = "需要時自行打開")]
     public void Stability_KillerWinRate_ShouldNotVaryTooMuchAcrossBatches()
     {
         // 基準配置：50x50、3v3、視野 5x5 / 7x7、回合 100（與主程式預設一致）
@@ -95,7 +95,7 @@ public class MonteCarloSmokeTest
             "Avg killer points should be non-negative.");
     }
 
-    [Fact(DisplayName = "單調性：SurvivorSight ↑ 時，鬼勝率不應上升；生存者平均分不應下降")]
+    [Fact(DisplayName = "單調性：SurvivorSight ↑ 時，鬼勝率不應上升；生存者平均分不應下降",Skip = "需要時自行打開")]
     public void Monotonicity_SurvivorSight_Increase_ShouldNotHelpKillers()
     {
         var baseConfigLowSight = new GameConfig

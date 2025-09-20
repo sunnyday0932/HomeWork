@@ -5,6 +5,11 @@
   - docs
     - DiscussionContext : 內有完整與 AI 對話設計此 POC 內容。
     - *Result 等檔案 : 模擬測試結果內涵 aggreate(總結結果)、episode.json(每一 run 關鍵事件)、summary (每次模擬的最終勝利方)
+    - memory.json : 供未來其他對話視窗此 AI 可以快速回憶起之前對話的內容摘要。
+
+# 程式架構
+  - .net 8 
+  - 本專案直接使用 xunit 測試框架進行開發，可直些執行 dotnet test ，例行執行僅測試重要邏輯，需要執行較久的測試程式目前先行使用 skip 跳過，有需要執行時手動開啟
 
 # 總結摘要
 ---

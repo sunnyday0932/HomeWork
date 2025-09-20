@@ -10,7 +10,7 @@ public static class SimulatorExtensions
     /// 跑單場並回傳：勝者 / 分數 / 回合數 / 逐回合事件。
     /// 此函式為保留你原有 RunOne 的語意，僅在事件產生時把 Round/EP 填正。
     /// </summary>
-    public static (string Winner, int SurvivorScore, int KillerScore, int Rounds, List<GameEvent> Events)
+    private static (string Winner, int SurvivorScore, int KillerScore, int Rounds, List<GameEvent> Events)
         RunOneWithEvents(GameConfig config, int episode)
     {
         var state = new GameState(config);
@@ -121,8 +121,8 @@ public static class SimulatorExtensions
             {
                 var winner =
                     (state.SurvivorScore >= state.Config.SurvivorCount)
-                        ? "Survivor"      // 全員逃脫
-                        : "Killer";       // 被抓光或其它情形
+                        ? "Survivor" // 全員逃脫
+                        : "Killer"; // 被抓光或其它情形
 
                 return (winner, state.SurvivorScore, state.KillerScore, state.Round, state.Log.Events.ToList());
             }
@@ -203,6 +203,115 @@ public static class SimulatorExtensions
         using (var aw = new StreamWriter(aggregatePath, false))
         {
             var whichHigher = killerWinRate > 0.5 ? "Killer" : (killerWinRate < 0.5 ? "Survivor" : "Tie");
+            aw.WriteLine("{");
+            aw.WriteLine($"  \"episodes\": {episodes},");
+            aw.WriteLine($"  \"killer_win_rate\": {killerWinRate.ToString("0.000", CultureInfo.InvariantCulture)},");
+            aw.WriteLine($"  \"avg_survivor_points\": {avgS.ToString("0.000", CultureInfo.InvariantCulture)},");
+            aw.WriteLine($"  \"avg_killer_points\": {avgK.ToString("0.000", CultureInfo.InvariantCulture)},");
+            aw.WriteLine($"  \"avg_rounds\": {avgR.ToString("0.0", CultureInfo.InvariantCulture)},");
+            aw.WriteLine($"  \"which_side_higher\": \"{whichHigher}\"");
+            aw.WriteLine("}");
+        }
+    }
+
+    /// <summary>
+    /// 多執行緒批次模擬：每個 episode 各自計算與輸出事件檔，最後彙整 summary 與 aggregate。
+    /// </summary>
+    public static void RunAndSaveBatchParallel(
+        GameConfig baseConfig,
+        int episodes,
+        string outputDir = "TestResult",
+        int? maxDegreeOfParallelism = null)
+    {
+        if (!Directory.Exists(outputDir))
+        {
+            Directory.CreateDirectory(outputDir);
+        }
+
+        var episodeResults = new EpisodeResult[episodes];
+
+        int degree = maxDegreeOfParallelism ?? Environment.ProcessorCount;
+
+        Parallel.For(0, episodes, new ParallelOptions { MaxDegreeOfParallelism = degree }, episode =>
+        {
+            // 為每個 episode 建立獨立的 GameConfig（避免共享狀態）
+            var config = new GameConfig
+            {
+                Width = baseConfig.Width,
+                Height = baseConfig.Height,
+                MaxRounds = baseConfig.MaxRounds,
+                SurvivorCount = baseConfig.SurvivorCount,
+                KillerCount = baseConfig.KillerCount,
+                SurvivorSight = baseConfig.SurvivorSight,
+                KillerSight = baseConfig.KillerSight,
+                ExitCount = baseConfig.ExitCount,
+                Seed = baseConfig.Seed + episode, // 固定映射：可重現
+                VerboseLog = false,
+                PrintAsciiMapEachRound = false
+            };
+
+            // 執行單場並立刻輸出該場事件（避免大量記憶體累積）
+            var (winner, sScore, kScore, rounds, events) = SimulatorExtensions.RunOneWithEvents(config, episode);
+
+            string ndjsonPath = Path.Combine(outputDir, $"episode_{episode:D4}.ndjson");
+            using (var ew = new StreamWriter(ndjsonPath, false))
+            {
+                for (int i = 0; i < events.Count; i++)
+                {
+                    ew.WriteLine(events[i].ToString());
+                }
+            }
+
+            // 暫存本場摘要（陣列元素互不衝突，無需 lock）
+            episodeResults[episode] = new EpisodeResult
+            {
+                Episode = episode,
+                Winner = winner,
+                SurvivorScore = sScore,
+                KillerScore = kScore,
+                Rounds = rounds
+            };
+        });
+
+        // === 彙整輸出（單執行緒、避免併寫） ===
+        string csvPath = Path.Combine(outputDir, "summary.csv");
+        using (var sw = new StreamWriter(csvPath, false))
+        {
+            sw.WriteLine("episode,winner,survivorScore,killerScore,rounds");
+            for (int i = 0; i < episodeResults.Length; i++)
+            {
+                var r = episodeResults[i];
+                sw.WriteLine($"{r.Episode},{r.Winner},{r.SurvivorScore},{r.KillerScore},{r.Rounds}");
+            }
+        }
+
+        int killerWins = 0;
+        int sumS = 0;
+        int sumK = 0;
+        int sumRounds = 0;
+
+        for (int i = 0; i < episodeResults.Length; i++)
+        {
+            var r = episodeResults[i];
+            if (r.Winner == "Killer")
+            {
+                killerWins++;
+            }
+
+            sumS += r.SurvivorScore;
+            sumK += r.KillerScore;
+            sumRounds += r.Rounds;
+        }
+
+        double killerWinRate = (double)killerWins / episodes;
+        double avgS = (double)sumS / episodes;
+        double avgK = (double)sumK / episodes;
+        double avgR = (double)sumRounds / episodes;
+        string whichHigher = killerWinRate > 0.5 ? "Killer" : (killerWinRate < 0.5 ? "Survivor" : "Tie");
+
+        string aggregatePath = Path.Combine(outputDir, "aggregate.json");
+        using (var aw = new StreamWriter(aggregatePath, false))
+        {
             aw.WriteLine("{");
             aw.WriteLine($"  \"episodes\": {episodes},");
             aw.WriteLine($"  \"killer_win_rate\": {killerWinRate.ToString("0.000", CultureInfo.InvariantCulture)},");

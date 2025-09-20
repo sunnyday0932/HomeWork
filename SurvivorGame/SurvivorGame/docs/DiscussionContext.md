@@ -5325,3 +5325,189 @@ return ("Killer", state.SurvivorScore, state.KillerScore, roundsPlayed, state.Lo
 * 只有「時間到」這條路徑是在**迴圈結束後**回傳，才會踩到 `Round = MaxRounds + 1` 的情況。
 
 改完後，`summary.csv` 的 rounds 在逾時場次就會正確顯示為 **100**（或你設定的 `MaxRounds`）。
+
+
+Question :
+這樣跑 300 次模擬大概要 2 - 3 min，有辦法使用多執行續模擬提高模擬效率嗎?
+
+Answer :
+可以，完全能用「多執行緒 / 平行」把 300 場縮到數十秒～一分鐘等級。關鍵是：**每場模擬互相獨立**，只要避免共享可變狀態與錯誤的檔案併寫即可。
+
+下面給你一個**平行版**：`RunAndSaveBatchParallel`。
+特色：
+
+* 固定「episode → seed」對應，結果**可重現**（與單執行緒相同，只是更快）。
+* 每個 episode 各寫自己的 `episode_xxxx.ndjson`（彼此互不干涉）。
+* `summary.csv` 與 `aggregate.json` 改為**先收集結果**，最後再一次性寫入（避免多執行緒同檔案併寫）。
+* 可調 `MaxDegreeOfParallelism`，預設用 `Environment.ProcessorCount`。
+
+把這段加到主專案 `TagPOC`（與 `SimulatorExtensions` 同檔或新檔均可）：
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Threading.Tasks;
+
+namespace TagPOC
+{
+    public static class SimulatorParallel
+    {
+        private sealed class EpisodeResult
+        {
+            public int Episode { get; set; }
+            public string Winner { get; set; } = "Killer";
+            public int SurvivorScore { get; set; }
+            public int KillerScore { get; set; }
+            public int Rounds { get; set; }
+        }
+
+        /// <summary>
+        /// 多執行緒批次模擬：每個 episode 各自計算與輸出事件檔，最後彙整 summary 與 aggregate。
+        /// </summary>
+        public static void RunAndSaveBatchParallel(
+            GameConfig baseConfig,
+            int episodes,
+            string outputDir = "TestResult",
+            int? maxDegreeOfParallelism = null)
+        {
+            if (!Directory.Exists(outputDir))
+            {
+                Directory.CreateDirectory(outputDir);
+            }
+
+            var episodeResults = new EpisodeResult[episodes];
+
+            int degree = maxDegreeOfParallelism ?? Environment.ProcessorCount;
+
+            Parallel.For(0, episodes, new ParallelOptions { MaxDegreeOfParallelism = degree }, episode =>
+            {
+                // 為每個 episode 建立獨立的 GameConfig（避免共享狀態）
+                var config = new GameConfig
+                {
+                    Width = baseConfig.Width,
+                    Height = baseConfig.Height,
+                    MaxRounds = baseConfig.MaxRounds,
+                    SurvivorCount = baseConfig.SurvivorCount,
+                    KillerCount = baseConfig.KillerCount,
+                    SurvivorSight = baseConfig.SurvivorSight,
+                    KillerSight = baseConfig.KillerSight,
+                    ExitCount = baseConfig.ExitCount,
+                    Seed = baseConfig.Seed + episode, // 固定映射：可重現
+                    VerboseLog = false,
+                    PrintAsciiMapEachRound = false
+                };
+
+                // 執行單場並立刻輸出該場事件（避免大量記憶體累積）
+                var (winner, sScore, kScore, rounds, events) = SimulatorExtensions.RunOneWithEvents(config, episode);
+
+                string ndjsonPath = Path.Combine(outputDir, $"episode_{episode:D4}.ndjson");
+                using (var ew = new StreamWriter(ndjsonPath, false))
+                {
+                    for (int i = 0; i < events.Count; i++)
+                    {
+                        ew.WriteLine(events[i].ToString());
+                    }
+                }
+
+                // 暫存本場摘要（陣列元素互不衝突，無需 lock）
+                episodeResults[episode] = new EpisodeResult
+                {
+                    Episode = episode,
+                    Winner = winner,
+                    SurvivorScore = sScore,
+                    KillerScore = kScore,
+                    Rounds = rounds
+                };
+            });
+
+            // === 彙整輸出（單執行緒、避免併寫） ===
+            string csvPath = Path.Combine(outputDir, "summary.csv");
+            using (var sw = new StreamWriter(csvPath, false))
+            {
+                sw.WriteLine("episode,winner,survivorScore,killerScore,rounds");
+                for (int i = 0; i < episodeResults.Length; i++)
+                {
+                    var r = episodeResults[i];
+                    sw.WriteLine($"{r.Episode},{r.Winner},{r.SurvivorScore},{r.KillerScore},{r.Rounds}");
+                }
+            }
+
+            int killerWins = 0;
+            int sumS = 0;
+            int sumK = 0;
+            int sumRounds = 0;
+
+            for (int i = 0; i < episodeResults.Length; i++)
+            {
+                var r = episodeResults[i];
+                if (r.Winner == "Killer")
+                {
+                    killerWins++;
+                }
+                sumS += r.SurvivorScore;
+                sumK += r.KillerScore;
+                sumRounds += r.Rounds;
+            }
+
+            double killerWinRate = (double)killerWins / episodes;
+            double avgS = (double)sumS / episodes;
+            double avgK = (double)sumK / episodes;
+            double avgR = (double)sumRounds / episodes;
+            string whichHigher = killerWinRate > 0.5 ? "Killer" : (killerWinRate < 0.5 ? "Survivor" : "Tie");
+
+            string aggregatePath = Path.Combine(outputDir, "aggregate.json");
+            using (var aw = new StreamWriter(aggregatePath, false))
+            {
+                aw.WriteLine("{");
+                aw.WriteLine($"  \"episodes\": {episodes},");
+                aw.WriteLine($"  \"killer_win_rate\": {killerWinRate.ToString("0.000", CultureInfo.InvariantCulture)},");
+                aw.WriteLine($"  \"avg_survivor_points\": {avgS.ToString("0.000", CultureInfo.InvariantCulture)},");
+                aw.WriteLine($"  \"avg_killer_points\": {avgK.ToString("0.000", CultureInfo.InvariantCulture)},");
+                aw.WriteLine($"  \"avg_rounds\": {avgR.ToString("0.0", CultureInfo.InvariantCulture)},");
+                aw.WriteLine($"  \"which_side_higher\": \"{whichHigher}\"");
+                aw.WriteLine("}");
+            }
+        }
+    }
+}
+```
+
+### 使用方式（`Program.Main` 範例）
+
+```csharp
+public static void Main()
+{
+    var config = new GameConfig
+    {
+        Width = 100,
+        Height = 100,
+        MaxRounds = 100,
+        SurvivorCount = 3,
+        KillerCount = 2,
+        SurvivorSight = 2, // 5x5
+        KillerSight = 3,   // 7x7
+        ExitCount = 2,
+        Seed = 42,
+        VerboseLog = false,
+        PrintAsciiMapEachRound = false
+    };
+
+    // 平行跑 300 場，使用 CPU 核心數平行度
+    SimulatorParallel.RunAndSaveBatchParallel(config, episodes: 300, outputDir: "TestResult");
+
+    Console.WriteLine("Parallel batch done. See ./TestResult");
+}
+```
+
+---
+
+## 小叮嚀（效能 & 正確性）
+
+* **I/O**：每個 episode 都寫獨立檔案，避免同檔併寫；`summary.csv` 與 `aggregate.json` 統一最後輸出。
+* **可重現性**：`Seed = base + episode`，即使平行執行，輸出也與單執行緒相同（檔案順序固定）。
+* **平行度**：CPU-bound 為主，`MaxDegreeOfParallelism = CPU 核心數` 通常最划算；如 I/O 很快也可略高於核心數測試。
+* **建議**：Release 模式執行、啟用伺服器 GC（`<ServerGarbageCollection>true</ServerGarbageCollection>`）可再加速。
+
+如果你希望\*\*也把 `summary.csv` 的產出改成同時寫（append）\*\*以避免占記憶體，我也可以提供一版用 `lock` 或 `Channel<T>` 的串流寫法；但就 300 場來說，先收集後寫一次是最簡潔且安全的。
