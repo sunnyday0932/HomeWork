@@ -14,9 +14,9 @@ public class PathStrategyTests
         var strategies = new IPathStrategy[]
         {
             new NextHopMatrixStrategy(),
-            //new NextDirectionMatrixStrategy(),
-            //new NextDirectionWithDistanceStrategy(),
-            //new LowestCommonAncestorStrategy ()
+            new NextDirectionMatrixStrategy(),
+            new NextDirectionWithDistanceStrategy(),
+            new LowestCommonAncestorStrategy ()
         };
 
         var tree = BinaryTree.BuildFromCsv(csv);

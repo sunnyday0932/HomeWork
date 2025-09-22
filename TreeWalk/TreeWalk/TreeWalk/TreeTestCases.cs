@@ -10,7 +10,7 @@ public static class TreeTestCases
             "A,B,C,,D,E,F,,,,,,,G",
             "B", "F", 3,
             new[] { "U", "DR", "DR" },
-@"
+            @"
        A
      /   \
     B     C
@@ -26,7 +26,7 @@ public static class TreeTestCases
             "A,B,C,,D,E,F,,,,,,,G",
             "E", "D", 4,
             new[] { "U", "U", "DL", "DR" },
-@"
+            @"
        A
      /   \
     B     C
@@ -43,7 +43,7 @@ public static class TreeTestCases
             "A,B,C,D,E,F,G",
             "D", "G", 4,
             new[] { "U", "U", "DR", "DR" },
-@"
+            @"
        A
      /   \
     B     C
@@ -55,10 +55,10 @@ public static class TreeTestCases
         // ---------- T3 ----------
         yield return new object[]
         {
-            "A,B,,C,,,,D",
+            LevelOrderCsvBuilder.BuildLeftSkewedCsv(4),
             "A", "D", 3,
             new[] { "DL", "DL", "DL" },
-@"
+            @"
     A
    /
   B
@@ -72,10 +72,10 @@ D
         // ---------- T4 ----------
         yield return new object[]
         {
-            "A,,B,,,,C,,,,,,D",
+            LevelOrderCsvBuilder.BuildRightSkewedCsv(4),
             "A", "D", 3,
             new[] { "DR", "DR", "DR" },
-@"
+            @"
 A
  \
   B
@@ -92,7 +92,7 @@ A
             "A",
             "A", "A", 0,
             new string[] { },
-@"
+            @"
 A
 "
         };
@@ -100,10 +100,10 @@ A
         // ---------- T8 (深度 10 左偏) ----------
         yield return new object[]
         {
-            "A,B,,,,,,,,,C,,,,,,,,,D,,,,,,,,,E,,,,,,,,,F,,,,,,,,,G,,,,,,,,,H,,,,,,,,,I,,,,,,,,,J",
+            LevelOrderCsvBuilder.BuildLeftSkewedCsv(10),
             "A", "J", 9,
-            new[] { "DL","DL","DL","DL","DL","DL","DL","DL","DL" },
-@"
+            new[] { "DL", "DL", "DL", "DL", "DL", "DL", "DL", "DL", "DL" },
+            @"
 A
 /
 B
@@ -129,10 +129,10 @@ J
         // ---------- T9 (深度 10 右偏) ----------
         yield return new object[]
         {
-            "A,,B,,,,C,,,,,,D,,,,,,,,E,,,,,,,,,,F,,,,,,,,,,,,G,,,,,,,,,,,,,,H,,,,,,,,,,,,,,,,I,,,,,,,,,,,,,,,,,,J",
+            LevelOrderCsvBuilder.BuildRightSkewedCsv(10),
             "A", "J", 9,
-            new[] { "DR","DR","DR","DR","DR","DR","DR","DR","DR" },
-@"
+            new[] { "DR", "DR", "DR", "DR", "DR", "DR", "DR", "DR", "DR" },
+            @"
 A
  \
   B
@@ -158,10 +158,39 @@ A
         // ---------- T10 (深度 10 Zig-Zag) ----------
         yield return new object[]
         {
-            "A,B,,,C,,,,,D,,,,,,,E,,,,,,,,,F,,,,,,,,,,,G,,,,,,,,,,,,,H,,,,,,,,,,,,,,,I,,,,,,,,,,,,,,,,,J",
+            LevelOrderCsvBuilder.BuildZigZagCsv(10, startLeft: true),
             "A", "J", 9,
-            new[] { "DL","DR","DL","DR","DL","DR","DL","DR","DL" },
-@"
+            new[] { "DL", "DR", "DL", "DR", "DL", "DR", "DL", "DR", "DL" },
+            @"
+A
+/
+B
+ \
+  C
+ /
+D
+ \
+  E
+ /
+F
+ \
+  G
+ /
+H
+ \
+  I
+ /
+J
+"
+        };
+
+        // ---------- T10-REV（ZigZag 10 層，J -> A，統一上行輸出 U） ----------
+        yield return new object[]
+        {
+            LevelOrderCsvBuilder.BuildZigZagCsv(10, startLeft: true),
+            "J", "A", 9,
+            new[] { "U", "U", "U", "U", "U", "U", "U", "U", "U" },
+            @"
 A
 /
 B
