@@ -1,8 +1,10 @@
 ﻿using BenchmarkDotNet.Attributes;
+using TreeWalk;
 using TreeWalk.Strategy;
 
-namespace TreeWalk;
+namespace TreeWalforBenchmark;
 
+[MemoryDiagnoser]
 public class StrategyBenchmarks
 {
     private readonly BinaryTree _tree = BinaryTree.BuildFromCsv("A,B,C,,D,E,F,,,,,,,G");
