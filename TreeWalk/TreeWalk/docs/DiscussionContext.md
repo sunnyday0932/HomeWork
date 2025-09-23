@@ -3936,10 +3936,10 @@ Question :
 我幫你整理成兩組圖表：
 
 Build Memory (MB):
-![](.\TreeWalk\TreeWalk\docs\images\chart1.png)
+![](https://github.com/sunnyday0932/HomeWork/blob/main/TreeWalk/TreeWalk/docs/images/chart1.png)
 
 Query Times:
-![](.\TreeWalk\TreeWalk\docs\images\chart2.png)
+![](https://github.com/sunnyday0932/HomeWork/blob/main/TreeWalk/TreeWalk/docs/images/chart2.png)
 
 
 ---
@@ -4366,18 +4366,16 @@ Answer :
 
 ```mermaid
 flowchart TD
+    A[需求：查詢二元樹最短路徑] --> B{樹是否固定?}
+    B -->|是，固定不會變| C{記憶體是否充足?}
+    B -->|否，樹可能重建或更新| D[LCA 策略]
 
-A[需求：查詢二元樹最短路徑] --> B{樹是否固定?}
+    C -->|充足，查詢量極大| E[NextHopMatrix 策略]
+    C -->|記憶體有限/不確定| D
 
-B -->|是，固定不會變| C{記憶體是否充足?}
-B -->|否，樹可能重建或更新| D[LCA 策略]
-
-C -->|充足，查詢量極大| E[NextHopMatrix 策略<br/>查詢最快 ~100ns<br/>建表 O(N²) ~60MB]
-C -->|記憶體有限/不確定| D
-
-D --> F{是否只要距離?}
-F -->|是| G[NextDirection+Distance 策略<br/>距離查詢 O(1)]
-F -->|否| H[LCA 策略<br/>建表快、省記憶體，查詢 ~200ns]
+    D --> F{是否只要距離?}
+    F -->|是| G[NextDirection+Distance 策略]
+    F -->|否| H[LCA 策略<br/>建表快、省記憶體，查詢 ~200ns]
 ```
 
 ---
